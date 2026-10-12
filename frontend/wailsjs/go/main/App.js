@@ -82,6 +82,14 @@ export function GetServers() {
   return window['go']['main']['App']['GetServers']();
 }
 
+export function OpenURL(arg1) {
+  return window['go']['main']['App']['OpenURL'](arg1);
+}
+
+export function ProbeEndpoint(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ProbeEndpoint'](arg1, arg2, arg3);
+}
+
 export function ReadSkiffConfigFromPath(arg1) {
   return window['go']['main']['App']['ReadSkiffConfigFromPath'](arg1);
 }

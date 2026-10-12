@@ -19,6 +19,8 @@ export default function DeployDomainSection({
   appName = "",
   onProjectUpdated,
   addToast,
+  onDnsCheck,
+  onOpenUrl,
 }) {
   const [domain, setDomain] = useState("");
   const [targetPort, setTargetPort] = useState(8080);
@@ -75,6 +77,7 @@ export default function DeployDomainSection({
     const clean = domain.trim();
     if (!clean || !server?.host || !window.go?.main?.App) {
       setDnsCheck(null);
+      if (onDnsCheck) onDnsCheck(null);
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       return;
     }
@@ -84,9 +87,15 @@ export default function DeployDomainSection({
       setIsCheckingDNS(true);
       try {
         const res = await window.go.main.App.CheckDomainDNS(clean, server.host);
-        if (isMountedRef.current) setDnsCheck(res);
+        if (isMountedRef.current) {
+          setDnsCheck(res);
+          if (onDnsCheck) onDnsCheck(res);
+        }
       } catch {
-        if (isMountedRef.current) setDnsCheck(null);
+        if (isMountedRef.current) {
+          setDnsCheck(null);
+          if (onDnsCheck) onDnsCheck(null);
+        }
       } finally {
         if (isMountedRef.current) setIsCheckingDNS(false);
       }
@@ -370,15 +379,17 @@ export default function DeployDomainSection({
               </span>
 
               {liveUrl && (
-                <a
-                  href={liveUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onOpenUrl) onOpenUrl(liveUrl);
+                    else window.open(liveUrl, "_blank", "noopener");
+                  }}
                   className="text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1"
                 >
                   <span>Open Live App</span>
                   <ExternalLink className="w-3 h-3" />
-                </a>
+                </button>
               )}
             </div>
           </div>

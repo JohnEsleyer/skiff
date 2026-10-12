@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -790,6 +792,106 @@ func (a *App) RemoveAppDomain(serverID, appName string) error {
 		sanitizeAppName(appName))
 	_, err = client.RunCommand(cmd)
 	return err
+}
+
+// OpenURL opens a URL in the OS default browser. Plain <a target="_blank">
+// anchors do not escape the Wails webview, so all "open" buttons route here.
+func (a *App) OpenURL(targetURL string) error {
+	if a.ctx == nil {
+		return fmt.Errorf("app context not ready")
+	}
+	u := strings.TrimSpace(targetURL)
+	if u == "" {
+		return fmt.Errorf("empty url")
+	}
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return fmt.Errorf("refusing to open non-http(s) url")
+	}
+	runtime.BrowserOpenURL(a.ctx, u)
+	return nil
+}
+
+type EndpointProbe struct {
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	OK         bool   `json:"ok"`
+	StatusCode int    `json:"statusCode"`
+	LatencyMs  int64  `json:"latencyMs"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ProbeEndpoint checks one URL and reports status + latency. Loopback hosts
+// (127.0.0.1/localhost) are probed ON the VPS over SSH, since they refer to
+// the remote host; public URLs are probed from the desktop.
+func (a *App) ProbeEndpoint(serverID, name, targetURL string) (*EndpointProbe, error) {
+	probe := &EndpointProbe{Name: name, URL: targetURL}
+
+	u, err := url.Parse(targetURL)
+	if err != nil || u.Host == "" {
+		probe.Error = "malformed url"
+		return probe, nil
+	}
+
+	start := time.Now()
+	host := u.Hostname()
+	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		srv, err := a.store.GetServer(serverID)
+		if err != nil {
+			probe.Error = err.Error()
+			return probe, nil
+		}
+		client, err := sshclient.NewClient(*srv)
+		if err != nil {
+			probe.Error = "ssh: " + err.Error()
+			return probe, nil
+		}
+		defer client.Close()
+
+		out, _ := client.RunCommand(fmt.Sprintf(
+			"curl -s -o /dev/null -w '%%{http_code} %%{time_total}' -m 8 %s 2>/dev/null; echo \"EXIT:$?\"",
+			shellSingleQuote(targetURL)))
+		raw := strings.TrimSpace(out)
+		body := raw
+		exitOK := strings.HasSuffix(raw, "EXIT:0")
+		if idx := strings.LastIndex(raw, "EXIT:"); idx >= 0 {
+			body = strings.TrimSpace(raw[:idx])
+		}
+		fields := strings.Fields(body)
+		if len(fields) >= 1 {
+			fmt.Sscanf(fields[0], "%d", &probe.StatusCode)
+		}
+		if len(fields) >= 2 {
+			var secs float64
+			fmt.Sscanf(fields[1], "%f", &secs)
+			probe.LatencyMs = int64(secs * 1000)
+		}
+		probe.LatencyMs = time.Since(start).Milliseconds()
+		if !exitOK || probe.StatusCode == 0 {
+			probe.Error = "connection refused or timed out on VPS"
+			return probe, nil
+		}
+		probe.OK = probe.StatusCode >= 200 && probe.StatusCode < 400
+		if !probe.OK {
+			probe.Error = fmt.Sprintf("HTTP %d", probe.StatusCode)
+		}
+		return probe, nil
+	}
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Get(targetURL)
+	probe.LatencyMs = time.Since(start).Milliseconds()
+	if err != nil {
+		probe.Error = err.Error()
+		return probe, nil
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	probe.StatusCode = resp.StatusCode
+	probe.OK = resp.StatusCode >= 200 && resp.StatusCode < 400
+	if !probe.OK {
+		probe.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+	return probe, nil
 }
 
 // ----------------- Wails Exposed RPC Methods -----------------

@@ -133,6 +133,28 @@ export namespace main {
 	        this.active = source["active"];
 	    }
 	}
+	export class EndpointProbe {
+	    name: string;
+	    url: string;
+	    ok: boolean;
+	    statusCode: number;
+	    latencyMs: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EndpointProbe(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.url = source["url"];
+	        this.ok = source["ok"];
+	        this.statusCode = source["statusCode"];
+	        this.latencyMs = source["latencyMs"];
+	        this.error = source["error"];
+	    }
+	}
 	export class ProjectDeploymentStatus {
 	    isDeployed: boolean;
 	    currentRelease: string;

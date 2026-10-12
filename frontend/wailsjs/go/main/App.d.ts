@@ -45,6 +45,10 @@ export function GetServerOverview(arg1:string):Promise<main.ServerOverview>;
 
 export function GetServers():Promise<Array<store.ServerConfig>>;
 
+export function OpenURL(arg1:string):Promise<void>;
+
+export function ProbeEndpoint(arg1:string,arg2:string,arg3:string):Promise<main.EndpointProbe>;
+
 export function ReadSkiffConfigFromPath(arg1:string):Promise<store.ProjectConfig>;
 
 export function RemoveAppDomain(arg1:string,arg2:string):Promise<void>;

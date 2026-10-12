@@ -270,6 +270,58 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProject?.id, selectedServer?.id]);
 
+  // Open a URL in the OS browser. Plain anchors cannot escape the Wails
+  // webview, so every "open" button routes through the Go backend.
+  const openExternal = async (url) => {
+    if (!url) return;
+    try {
+      if (window.go?.main?.App?.OpenURL) {
+        await window.go.main.App.OpenURL(url);
+        return;
+      }
+      window.open(url, "_blank", "noopener");
+    } catch {
+      try {
+        window.open(url, "_blank", "noopener");
+      } catch {
+        //
+      }
+    }
+  };
+
+  // Domain DNS state lifted from DeployDomainSection (it polls every 12s)
+  const [domainDnsCheck, setDomainDnsCheck] = useState(null);
+
+  // Live endpoint probes (status + latency per URL)
+  const [endpointProbes, setEndpointProbes] = useState({});
+  const [probingEndpoints, setProbingEndpoints] = useState(false);
+
+  const probeEndpoints = async (defs, serverId) => {
+    if (!defs || defs.length === 0 || !serverId || !window.go?.main?.App?.ProbeEndpoint) return;
+    setProbingEndpoints(true);
+    try {
+      const results = await Promise.all(
+        defs.map((d) =>
+          window.go.main.App.ProbeEndpoint(serverId, d.name, d.url).catch(() => ({
+            name: d.name,
+            url: d.url,
+            ok: false,
+            statusCode: 0,
+            latencyMs: 0,
+            error: "probe failed",
+          }))
+        )
+      );
+      const map = {};
+      results.forEach((r) => {
+        map[r.url] = r;
+      });
+      setEndpointProbes(map);
+    } finally {
+      setProbingEndpoints(false);
+    }
+  };
+
   const handleSelectServerCard = (srv) => {
     setSelectedServer(srv);
     setActiveView("manage");
@@ -395,15 +447,15 @@ export default function App() {
     setConfirmState({
       isOpen: true,
       title: "Delete Release Artifact?",
-      message: `Permanently remove release "${rel.ID}" (${rel.size}) from the VPS? This cannot be undone.`,
+      message: `Permanently remove release "${rel.id}" (${rel.size}) from the VPS? This cannot be undone.`,
       confirmText: "Delete Release",
       isDestructive: true,
       isLoading: false,
       onConfirm: async () => {
-        setDeletingReleaseId(rel.ID);
+        setDeletingReleaseId(rel.id);
         try {
-          await window.go.main.App.DeleteAppRelease(selectedServer.id, activeProject.appDir, rel.ID);
-          addToast("info", "Release Removed", `Deleted ${rel.ID}`);
+          await window.go.main.App.DeleteAppRelease(selectedServer.id, activeProject.appDir, rel.id);
+          addToast("info", "Release Removed", `Deleted ${rel.id}`);
           loadReleasesList();
         } catch (err) {
           addToast("error", "Delete Failed", String(err));
@@ -417,15 +469,15 @@ export default function App() {
 
   const handleActivateRelease = async (rel) => {
     if (!activeProject || !selectedServer || rel.isCurrent) return;
-    setActivatingReleaseId(rel.ID);
+    setActivatingReleaseId(rel.id);
     try {
       await window.go.main.App.ActivateAppRelease(
         selectedServer.id,
         activeProject.appDir,
-        rel.ID,
+        rel.id,
         activeProject.restartCommand || "true"
       );
-      addToast("success", "Release Swapped", `Symlink pointing to release ${rel.ID}`);
+      addToast("success", "Release Swapped", `Symlink pointing to release ${rel.id}`);
       refreshAppDeploymentStatus();
     } catch (err) {
       addToast("error", "Switch Failed", String(err));
@@ -520,6 +572,50 @@ export default function App() {
 
   // Direct IP Access via Caddy port 80: bypasses local firewall blocks & DNS propagation delay
   const directIpUrl = selectedServer?.host ? `http://${selectedServer.host}` : "";
+
+  // Canonical live URLs for the deployed screen
+  const projectDomain = (activeProject?.domain || "").trim();
+  const projectTlsMode = activeProject?.tlsMode || "auto";
+  const domainLiveUrl = projectDomain
+    ? projectTlsMode === "http"
+      ? `http://${projectDomain}`
+      : `https://${projectDomain}`
+    : "";
+  const primaryUrl = domainLiveUrl || directIpUrl;
+  const healthEndpointUrl =
+    (activeProject?.healthUrl || "").trim() ||
+    (primaryUrl ? `${primaryUrl.replace(/\/$/, "")}/api/health` : "");
+
+  const endpointDefs = isReallyDeployed
+    ? [
+        ...(primaryUrl ? [{ name: "Live Site", url: primaryUrl }] : []),
+        ...(domainLiveUrl && directIpUrl && domainLiveUrl !== directIpUrl
+          ? [{ name: "Direct IP", url: directIpUrl }]
+          : []),
+        ...(healthEndpointUrl ? [{ name: "Health Check", url: healthEndpointUrl }] : []),
+      ]
+    : [];
+
+  // Auto-probe endpoints whenever a deployment becomes visible
+  useEffect(() => {
+    if (deploymentStatus?.isDeployed && selectedServer && endpointDefs.length > 0) {
+      probeEndpoints(endpointDefs, selectedServer.id);
+    } else {
+      setEndpointProbes({});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deploymentStatus?.isDeployed, activeProject?.id, selectedServer?.id]);
+
+  const domainDnsChip = (() => {
+    if (!projectDomain) return null;
+    if (!domainDnsCheck)
+      return { text: "DNS checking…", cls: "bg-slate-800 text-slate-400 border-slate-700" };
+    if (domainDnsCheck.isPointing)
+      return { text: "DNS ● pointing", cls: "bg-emerald-950 text-emerald-300 border-emerald-700/60" };
+    if (domainDnsCheck.isCloudflare)
+      return { text: "Cloudflare proxied", cls: "bg-amber-950/60 text-amber-300 border-amber-800/60" };
+    return { text: "DNS pending", cls: "bg-slate-800 text-slate-400 border-slate-700" };
+  })();
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-200 text-xs font-sans select-none">
@@ -878,7 +974,178 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* DIRECT IP ACCESS BAR (PORT 80 VIA CADDY) */}
+                  {/* DEPLOYED LIVE SCREEN (with URLs) / DIRECT IP BAR (pre-deploy) */}
+                  {isReallyDeployed ? (
+                    <div className="space-y-2.5 shrink-0">
+                      {/* LIVE HERO */}
+                      <div className="p-4 bg-emerald-950/25 border border-emerald-500/40 rounded-2xl space-y-3 shadow-lg shadow-emerald-950/30">
+                        <div className="flex items-center justify-between gap-3 flex-wrap">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <span className="relative flex h-3 w-3 shrink-0">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
+                              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-400" />
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-[10px] font-mono uppercase text-emerald-400/90 font-bold tracking-wider">
+                                Live deployment
+                              </div>
+                              <div className="font-mono text-sm text-white font-bold truncate select-all">
+                                {primaryUrl || "—"}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!primaryUrl) return;
+                                try {
+                                  await navigator.clipboard.writeText(primaryUrl);
+                                  setCopiedIpUrl(true);
+                                  addToast("info", "Copied", `Copied ${primaryUrl}`);
+                                  setTimeout(() => setCopiedIpUrl(false), 2000);
+                                } catch {
+                                  //
+                                }
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium flex items-center gap-1 transition"
+                            >
+                              {copiedIpUrl ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                              <span>{copiedIpUrl ? "Copied" : "Copy URL"}</span>
+                            </button>
+                            {primaryUrl && (
+                              <button
+                                type="button"
+                                onClick={() => openExternal(primaryUrl)}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold flex items-center gap-1 transition shadow-sm"
+                              >
+                                <span>Open Live Site</span>
+                                <ExternalLink className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+                          <div className="px-2.5 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/60 min-w-0">
+                            <div className="text-[9px] font-mono uppercase text-slate-500 font-bold">Service</div>
+                            <div className={`font-mono font-bold truncate ${deploymentStatus?.serviceActive ? "text-emerald-300" : "text-amber-300"}`}>
+                              {deploymentStatus?.serviceActive ? "● active" : `○ ${deploymentStatus?.serviceStatus || "stopped"}`}
+                            </div>
+                            <div className="text-[10px] text-slate-500 font-mono truncate">{activeAppSlug || activeProject?.name}</div>
+                          </div>
+                          <div className="px-2.5 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/60 min-w-0">
+                            <div className="text-[9px] font-mono uppercase text-slate-500 font-bold">Release</div>
+                            <div className="font-mono font-bold text-white truncate">{deploymentStatus?.currentRelease || "—"}</div>
+                            <div className="text-[10px] text-slate-500 font-mono">{deploymentStatus?.releasesCount ?? 0} kept</div>
+                          </div>
+                          <div className="px-2.5 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/60 min-w-0">
+                            <div className="text-[9px] font-mono uppercase text-slate-500 font-bold">Domain</div>
+                            <div className="font-mono font-bold text-white truncate">{projectDomain || "—"}</div>
+                            {domainDnsChip && (
+                              <span className={`inline-block mt-0.5 text-[9px] font-mono px-1.5 py-0.2 rounded border ${domainDnsChip.cls}`}>
+                                {domainDnsChip.text}
+                              </span>
+                            )}
+                          </div>
+                          <div className="px-2.5 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/60 min-w-0">
+                            <div className="text-[9px] font-mono uppercase text-slate-500 font-bold">Health</div>
+                            {(() => {
+                              const hp = healthEndpointUrl ? endpointProbes[healthEndpointUrl] : null;
+                              if (!hp)
+                                return <div className="font-mono text-slate-500">probing…</div>;
+                              if (hp.ok)
+                                return <div className="font-mono font-bold text-emerald-300">{hp.statusCode} • {hp.latencyMs}ms</div>;
+                              return <div className="font-mono font-bold text-rose-300 truncate" title={hp.error || ""}>{hp.error || `HTTP ${hp.statusCode}`}</div>;
+                            })()}
+                            <div className="text-[10px] text-slate-500 font-mono truncate">/api/health</div>
+                          </div>
+                        </div>
+
+                        {domainLiveUrl && directIpUrl && domainLiveUrl !== directIpUrl && (
+                          <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-slate-400 bg-slate-950/60 px-2.5 py-1.5 rounded-lg border border-slate-800/60">
+                            <span className="truncate">
+                              Direct IP: <span className="text-slate-200 select-all">{directIpUrl}</span>{" "}
+                              <span className="text-slate-500">(no DNS wait)</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => openExternal(directIpUrl)}
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 transition shrink-0"
+                            >
+                              <span>Open IP</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="text-[10px] font-mono text-slate-500">
+                          💡 Chrome tip: always open the explicit <code className="text-emerald-300">http://</code> link — typing a bare IP gets auto-upgraded to https:// and fails.
+                        </div>
+                      </div>
+
+                      {/* LIVE ENDPOINTS */}
+                      <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Globe className="w-3.5 h-3.5 text-indigo-400" />
+                            <h3 className="text-xs font-bold text-white">Live Endpoints</h3>
+                            <span className="text-[10px] font-mono text-slate-400 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
+                              {endpointDefs.length}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => probeEndpoints(endpointDefs, selectedServer?.id)}
+                            disabled={probingEndpoints}
+                            className="p-1 rounded text-slate-400 hover:text-white transition"
+                            title="Re-probe endpoints"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${probingEndpoints ? "animate-spin text-indigo-400" : ""}`} />
+                          </button>
+                        </div>
+                        <div className="space-y-1.5">
+                          {endpointDefs.map((def) => {
+                            const p = endpointProbes[def.url];
+                            return (
+                              <div
+                                key={def.url}
+                                className="px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between gap-2"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span
+                                    className={`w-2 h-2 rounded-full shrink-0 ${
+                                      !p ? "bg-slate-600" : p.ok ? "bg-emerald-400" : "bg-rose-400"
+                                    }`}
+                                  />
+                                  <div className="min-w-0">
+                                    <div className="text-[11px] font-bold text-white">{def.name}</div>
+                                    <div className="font-mono text-[10px] text-slate-400 truncate select-all">{def.url}</div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="font-mono text-[10px] text-slate-400">
+                                    {!p ? "…" : p.ok ? `${p.statusCode} • ${p.latencyMs}ms` : p.error || `HTTP ${p.statusCode}`}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => openExternal(def.url)}
+                                    className="p-1 rounded-lg text-slate-500 hover:text-indigo-300 hover:bg-slate-800 transition"
+                                    title={`Open ${def.name}`}
+                                  >
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {endpointDefs.length === 0 && (
+                            <div className="text-[11px] text-slate-500 font-mono">No endpoints yet.</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
                   <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5 min-w-0">
@@ -920,17 +1187,16 @@ export default function App() {
                           <span>{copiedIpUrl ? "Copied" : "Copy IP URL"}</span>
                         </button>
 
-                        {directIpUrl && (
-                          <a
-                            href={directIpUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold flex items-center gap-1 transition shadow-sm"
-                          >
-                            <span>Open IP URL</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
+                      {directIpUrl && (
+                        <button
+                          type="button"
+                          onClick={() => openExternal(directIpUrl)}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold flex items-center gap-1 transition shadow-sm"
+                        >
+                          <span>Open IP URL</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </button>
+                      )}
                       </div>
                     </div>
 
@@ -939,6 +1205,7 @@ export default function App() {
                       <span>💡 <strong>Tip for Chrome</strong>: Typing bare IPs causes Chrome to try <code className="text-rose-300">https://</code> and fail. Use explicit <code className="text-emerald-300">http://</code> or click <strong>Open IP URL</strong> above.</span>
                     </div>
                   </div>
+                  )}
 
                   {/* 6 STAGES PIPELINE: ALL-GREEN IF REALLY DEPLOYED */}
                   <div className="grid grid-cols-6 gap-2 shrink-0">
@@ -1000,10 +1267,10 @@ export default function App() {
 
                       <div className="flex-1 overflow-y-auto space-y-2 py-3">
                         {releasesList.map((rel) => {
-                          const isBusy = deletingReleaseId === rel.ID || activatingReleaseId === rel.ID;
+                          const isBusy = deletingReleaseId === rel.id || activatingReleaseId === rel.id;
                           return (
                             <div
-                              key={rel.ID}
+                              key={rel.id}
                               className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition ${
                                 rel.isCurrent
                                   ? "bg-emerald-950/20 border-emerald-500/60 ring-1 ring-emerald-500/30"
@@ -1013,7 +1280,7 @@ export default function App() {
                               <div className="min-w-0 space-y-0.5">
                                 <div className="flex items-center gap-1.5">
                                   <span className="font-mono text-xs font-bold text-white truncate">
-                                    {rel.ID}
+                                    {rel.id}
                                   </span>
                                   {rel.isCurrent && (
                                     <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-700/60 font-bold shrink-0">
@@ -1107,6 +1374,8 @@ export default function App() {
                             appName={activeAppSlug}
                             onProjectUpdated={(up) => setActiveProject(up)}
                             addToast={addToast}
+                            onDnsCheck={setDomainDnsCheck}
+                            onOpenUrl={openExternal}
                           />
                         </div>
                       )}
