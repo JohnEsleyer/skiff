@@ -123,13 +123,41 @@ func (a *App) BootstrapVPS(serverID string) error {
 	if err != nil {
 		return err
 	}
+
 	client, err := sshclient.NewClient(*srv)
 	if err != nil {
-		return err
+		return fmt.Errorf("SSH connection failed: %w", err)
 	}
-	defer client.Close()
 
-	return bootstrap.RunBootstrap(client, func(log string) {
-		runtime.EventsEmit(a.ctx, "deploy:log", log)
-	})
+	runner := bootstrap.NewRunner(client)
+
+	if a.stopLog != nil {
+		close(a.stopLog)
+	}
+	a.stopLog = make(chan struct{})
+
+	go func() {
+		defer client.Close()
+		runtime.EventsEmit(a.ctx, "bootstrap:status", "running")
+
+		err := runner.Execute(func(line string) {
+			runtime.EventsEmit(a.ctx, "bootstrap:log", line)
+		}, a.stopLog)
+
+		if err != nil {
+			runtime.EventsEmit(a.ctx, "bootstrap:status", "failed")
+			runtime.EventsEmit(a.ctx, "bootstrap:error", err.Error())
+		} else {
+			runtime.EventsEmit(a.ctx, "bootstrap:status", "success")
+		}
+	}()
+
+	return nil
+}
+
+func (a *App) CancelBootstrap() {
+	if a.stopLog != nil {
+		close(a.stopLog)
+		a.stopLog = nil
+	}
 }

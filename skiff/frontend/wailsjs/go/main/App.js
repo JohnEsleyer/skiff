@@ -6,6 +6,10 @@ export function BootstrapVPS(arg1) {
   return window['go']['main']['App']['BootstrapVPS'](arg1);
 }
 
+export function CancelBootstrap() {
+  return window['go']['main']['App']['CancelBootstrap']();
+}
+
 export function DeleteServer(arg1) {
   return window['go']['main']['App']['DeleteServer'](arg1);
 }

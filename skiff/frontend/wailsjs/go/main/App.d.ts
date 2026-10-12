@@ -5,6 +5,8 @@ import {sshclient} from '../models';
 
 export function BootstrapVPS(arg1:string):Promise<void>;
 
+export function CancelBootstrap():Promise<void>;
+
 export function DeleteServer(arg1:string):Promise<void>;
 
 export function DeployProject(arg1:string):Promise<void>;

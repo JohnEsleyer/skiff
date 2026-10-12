@@ -20,6 +20,7 @@ import ToastContainer from "./components/ToastContainer.jsx";
 import ConfirmModal from "./components/ConfirmModal.jsx";
 import TelemetryModal from "./components/TelemetryModal.jsx";
 import ProjectModal from "./components/ProjectModal.jsx";
+import BootstrapModal from "./components/BootstrapModal.jsx";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("deploy"); // "deploy" | "servers" | "logs"
@@ -70,6 +71,14 @@ export default function App() {
     onConfirm: null,
   });
 
+  // Real-time Bootstrap Console state
+  const [bootstrapState, setBootstrapState] = useState({
+    isOpen: false,
+    server: null,
+    logs: [],
+    status: "idle", // "idle" | "running" | "success" | "failed"
+  });
+
   // Server Modal Form
   const [serverForm, setServerForm] = useState({
     id: "",
@@ -113,6 +122,31 @@ export default function App() {
         window.runtime.EventsOff("deploy:error");
         window.runtime.EventsOff("remote:log");
       }
+    };
+  }, []);
+
+  // Real-time bootstrap stream events (separate subscription so the
+  // console modal works independently of the deploy pipeline feed)
+  useEffect(() => {
+    if (!window.runtime) return;
+
+    window.runtime.EventsOn("bootstrap:log", (line) => {
+      setBootstrapState((prev) => ({ ...prev, logs: [...prev.logs, line] }));
+    });
+    window.runtime.EventsOn("bootstrap:status", (status) => {
+      setBootstrapState((prev) => ({ ...prev, status }));
+      if (status === "success") {
+        addToast("success", "Provisioning Complete", "VPS is prepared for deployments.");
+      }
+    });
+    window.runtime.EventsOn("bootstrap:error", (err) => {
+      addToast("error", "Provisioning Error", err, 6000);
+    });
+
+    return () => {
+      window.runtime.EventsOff("bootstrap:log");
+      window.runtime.EventsOff("bootstrap:status");
+      window.runtime.EventsOff("bootstrap:error");
     };
   }, []);
 
@@ -239,23 +273,27 @@ export default function App() {
     setConfirmState({
       isOpen: true,
       title: "Bootstrap Low-End VPS",
-      message: `This will SSH into ${srv.host}, enable a 1.5GB swap file, install Caddy & SurrealDB, and prepare directories under /opt/skiff. Continue?`,
+      message: `This will SSH into ${srv.host} and idempotently verify swap, Caddy, SurrealDB, and directories under /opt/skiff. Already-installed components are skipped, never wiped. Continue?`,
       confirmText: "Run Provisioner",
       isDestructive: false,
       isLoading: false,
-      onConfirm: async () => {
-        setConfirmState((prev) => ({ ...prev, isLoading: true }));
-        try {
-          await window.go.main.App.BootstrapVPS(srv.id);
-          setActiveTab("deploy");
-          addToast("info", "Provisioning Initiated", "Check pipeline logs for progress");
-        } catch (err) {
-          addToast("error", "Bootstrap Failed", String(err));
-        } finally {
-          setConfirmState((prev) => ({ ...prev, isOpen: false, isLoading: false }));
-        }
+      onConfirm: () => {
+        // Close the confirm and open the live console immediately —
+        // output streams in real time, no blind spinner.
+        setConfirmState((prev) => ({ ...prev, isOpen: false, isLoading: false }));
+        setBootstrapState({ isOpen: true, server: srv, logs: [], status: "running" });
+        window.go.main.App.BootstrapVPS(srv.id).catch((err) => {
+          addToast("error", "Execution Failed", String(err));
+          setBootstrapState((prev) => ({ ...prev, status: "failed" }));
+        });
       },
     });
+  };
+
+  const handleCancelBootstrap = () => {
+    window.go.main.App.CancelBootstrap();
+    setBootstrapState((prev) => ({ ...prev, status: "failed" }));
+    addToast("warning", "Aborted", "Bootstrap cancelled by user.");
   };
 
   const handleStartLogs = () => {
@@ -708,6 +746,16 @@ export default function App() {
         confirmText={confirmState.confirmText}
         isDestructive={confirmState.isDestructive}
         isLoading={confirmState.isLoading}
+      />
+
+      {/* REAL-TIME BOOTSTRAP TERMINAL MODAL */}
+      <BootstrapModal
+        isOpen={bootstrapState.isOpen}
+        onClose={() => setBootstrapState((prev) => ({ ...prev, isOpen: false }))}
+        server={bootstrapState.server}
+        logs={bootstrapState.logs}
+        status={bootstrapState.status}
+        onCancel={handleCancelBootstrap}
       />
 
       {/* TOAST SYSTEM */}

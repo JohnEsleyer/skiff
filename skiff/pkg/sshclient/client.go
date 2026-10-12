@@ -80,6 +80,17 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// GetRawSSHClient exposes the underlying SSH connection for advanced
+// session handling (e.g. stdin-pipe script streaming).
+func (c *Client) GetRawSSHClient() *ssh.Client {
+	return c.client
+}
+
+// SigINT returns the SSH interrupt signal for cancelling remote sessions.
+func SigINT() ssh.Signal {
+	return ssh.SIGINT
+}
+
 func (c *Client) RunCommand(cmd string) (string, error) {
 	session, err := c.client.NewSession()
 	if err != nil {
