@@ -1,0 +1,21 @@
+# Dependencies
+skiff/frontend/node_modules/
+
+# Build outputs
+skiff/build/
+*.exe
+skiff/skiff
+
+# Go
+*.test
+*.out
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local secrets (never commit live credentials)
+.skiff/

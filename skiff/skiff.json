@@ -1,0 +1,34 @@
+{
+  "id": "esper-prod",
+  "name": "Esper Notes",
+  "localPath": ".",
+  "serverId": "vps-main",
+  "appDir": "/opt/skiff/apps/esper",
+  "buildSteps": [
+    {
+      "name": "Vite React Client",
+      "command": "npm run build"
+    },
+    {
+      "name": "Rust Backend (musl static binary)",
+      "command": "cargo build --manifest-path server/Cargo.toml --release --target x86_64-unknown-linux-musl"
+    }
+  ],
+  "artifacts": [
+    {
+      "local": "dist",
+      "remote": "public"
+    },
+    {
+      "local": "server/target/x86_64-unknown-linux-musl/release/esper-server",
+      "remote": "esper-server"
+    }
+  ],
+  "sharedFiles": [
+    ".env",
+    "uploads"
+  ],
+  "restartCommand": "sudo systemctl restart esper-server && sudo systemctl reload caddy",
+  "healthUrl": "https://api.esper.yourdomain.com/api/health",
+  "keepReleases": 3
+}
