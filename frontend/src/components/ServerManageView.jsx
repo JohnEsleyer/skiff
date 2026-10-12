@@ -4,16 +4,27 @@ import {
   ArrowLeft,
   CheckCircle2,
   Cpu,
+  Database,
   Globe,
   HardDrive,
   Layers,
   RefreshCw,
 } from "lucide-react";
 
+const DB_SERVICE_TYPES = ["surrealdb", "postgres", "postgresql", "mysql", "mariadb"];
+
+// Maps systemd unit names to skiff database types for info.json lookup.
+const toDbType = (serviceName) => {
+  if (serviceName === "postgresql") return "postgres";
+  if (serviceName === "mariadb") return "mysql";
+  return serviceName;
+};
+
 export default function ServerManageView({
   server,
   onBack,
   onOpenDeployments,
+  onOpenDatabaseModal,
   onProbe,
   probing = false,
   addToast,
@@ -168,16 +179,17 @@ export default function ServerManageView({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {(overview?.services || []).map((svc) => {
               const busy = actionInProgress === `${svc.name}-restart`;
+              const isDatabase = DB_SERVICE_TYPES.includes(svc.name);
               return (
                 <div
                   key={svc.name}
-                  className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between"
+                  className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2"
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center text-indigo-400">
-                      <Globe className="w-4 h-4" />
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-center text-indigo-400 shrink-0">
+                      {isDatabase ? <Database className="w-4 h-4" /> : <Globe className="w-4 h-4" />}
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <h4 className="text-xs font-bold text-white capitalize">{svc.name}</h4>
                       <div className="flex items-center gap-1.5 text-[11px] font-mono">
                         <span
@@ -188,14 +200,25 @@ export default function ServerManageView({
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => handleControlService(svc.name, "restart")}
-                    disabled={busy}
-                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg text-[11px] font-medium transition flex items-center gap-1"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${busy ? "animate-spin" : ""}`} />
-                    <span>Restart</span>
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {isDatabase && (
+                      <button
+                        onClick={() => onOpenDatabaseModal(toDbType(svc.name))}
+                        className="px-2.5 py-1.5 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/80 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition"
+                      >
+                        <Database className="w-3 h-3" />
+                        <span>Manage & Connect</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleControlService(svc.name, "restart")}
+                      disabled={busy}
+                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg text-[11px] font-medium transition flex items-center gap-1"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${busy ? "animate-spin" : ""}`} />
+                      <span>Restart</span>
+                    </button>
+                  </div>
                 </div>
               );
             })}

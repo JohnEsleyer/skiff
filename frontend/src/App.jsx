@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowLeftRight,
   CheckCircle2,
+  Copy,
   Edit2,
   Layers,
   Play,
@@ -20,6 +21,7 @@ import ConfirmModal from "./components/ConfirmModal.jsx";
 import TelemetryModal from "./components/TelemetryModal.jsx";
 import ProjectModal from "./components/ProjectModal.jsx";
 import BootstrapModal from "./components/BootstrapModal.jsx";
+import DatabaseManageModal from "./components/DatabaseManageModal.jsx";
 import ServerManageView from "./components/ServerManageView.jsx";
 import CustomSelect from "./components/CustomSelect.jsx";
 
@@ -276,8 +278,8 @@ export default function App() {
     setConfirmState({
       isOpen: true,
       title: "Bootstrap Low-End VPS",
-      message: `This will SSH into ${srv.host} and idempotently verify swap, Caddy, SurrealDB, and directories under /opt/skiff. Already-installed components are skipped, never wiped. Continue?`,
-      confirmText: "Run Provisioner",
+      message: `Open the stack provisioner for ${srv.host}? You will pick a preset (Esper/SurrealDB, PostgreSQL, MySQL, or Base) and watch live output. Already-installed components are skipped, never wiped. Continue?`,
+      confirmText: "Open Provisioner",
       isDestructive: false,
       isLoading: false,
       onConfirm: () => {
@@ -288,11 +290,26 @@ export default function App() {
   };
 
   const handleOpenBootstrap = (srv) => {
-    setBootstrapState({ isOpen: true, server: srv, logs: [], status: "running" });
-    window.go.main.App.BootstrapVPS(srv.id).catch((err) => {
+    // Open the modal on the stack-selection view; provisioning starts
+    // only after the user picks a preset and clicks Start Provisioning.
+    setBootstrapState({ isOpen: true, server: srv, logs: [], status: "idle" });
+  };
+
+  const handleStartBootstrap = (stackCfg) => {
+    const srv = bootstrapState.server;
+    if (!srv) return;
+    setBootstrapState((prev) => ({ ...prev, logs: [], status: "running" }));
+    window.go.main.App.BootstrapVPSWithStack(srv.id, stackCfg).catch((err) => {
       addToast("error", "Execution Failed", String(err));
       setBootstrapState((prev) => ({ ...prev, status: "failed" }));
     });
+  };
+
+  // Database connection manager modal (surrealdb | postgres | mysql)
+  const [dbModal, setDbModal] = useState({ isOpen: false, dbType: "surrealdb" });
+  const handleOpenDatabaseModal = (dbType) => {
+    if (!selectedServer) return;
+    setDbModal({ isOpen: true, dbType });
   };
 
   const handleCancelBootstrap = () => {
@@ -514,6 +531,7 @@ export default function App() {
             server={selectedServer}
             onBack={() => setActiveView("servers")}
             onOpenDeployments={() => setActiveView("deployments")}
+            onOpenDatabaseModal={handleOpenDatabaseModal}
             onProbe={() => handleTestConnection(selectedServer)}
             probing={testingServerId === selectedServer.id}
             addToast={addToast}
@@ -644,11 +662,28 @@ export default function App() {
                   {/* Terminal Feed */}
                   <div className="flex-1 bg-black border border-slate-800 rounded-2xl p-4 font-mono text-[11px] overflow-y-auto space-y-1">
                     <div className="text-slate-600 border-b border-slate-900 pb-2 mb-2 flex items-center justify-between">
-                      <span>[SKIFF PIPELINE TERMINAL]</span>
-                      <span className="text-emerald-500">READY</span>
+                      <div className="flex items-center gap-2">
+                        <span>[SKIFF PIPELINE TERMINAL]</span>
+                        <span className="text-emerald-500 text-[10px]">REAL-TIME LOGS</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(deployLogs.join("\n"));
+                            addToast("info", "Copied", "Pipeline logs copied to clipboard");
+                          } catch {
+                            addToast("warning", "Copy Failed", "Clipboard unavailable in this context");
+                          }
+                        }}
+                        className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 flex items-center gap-1.5 transition text-[11px]"
+                      >
+                        <Copy className="w-3 h-3 text-indigo-400" />
+                        <span>Copy All Logs</span>
+                      </button>
                     </div>
                     {deployLogs.map((log, i) => (
-                      <div key={i} className="text-slate-300 whitespace-pre-wrap leading-relaxed">
+                      <div key={i} className="text-slate-300 whitespace-pre-wrap leading-relaxed select-text">
                         {log}
                       </div>
                     ))}
@@ -828,7 +863,17 @@ export default function App() {
         server={bootstrapState.server}
         logs={bootstrapState.logs}
         status={bootstrapState.status}
+        onStartBootstrap={handleStartBootstrap}
         onCancel={handleCancelBootstrap}
+      />
+
+      {/* DATABASE CONNECTION MANAGER MODAL */}
+      <DatabaseManageModal
+        isOpen={dbModal.isOpen}
+        onClose={() => setDbModal((prev) => ({ ...prev, isOpen: false }))}
+        server={selectedServer}
+        dbType={dbModal.dbType}
+        addToast={addToast}
       />
 
       {/* TOAST SYSTEM */}

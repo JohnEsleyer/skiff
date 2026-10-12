@@ -8,16 +8,33 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+import CustomSelect from "./CustomSelect.jsx";
 
-const STAGES = [
-  { id: "detect", label: "Architecture Check" },
-  { id: "swap", label: "Virtual Memory (Swap)" },
-  { id: "deps", label: "System Utilities" },
-  { id: "caddy", label: "Caddy Reverse Proxy" },
-  { id: "surrealdb", label: "SurrealDB Engine" },
-  { id: "dirs", label: "Directory Skeleton" },
-  { id: "systemd", label: "Service Daemons" },
-  { id: "done", label: "Completed" },
+const STACK_PRESETS = [
+  {
+    id: "esper",
+    title: "Esper Stack (SurrealDB + Caddy + Swap)",
+    desc: "SurrealDB with selectable storage engine, Caddy reverse proxy, and 1.5GB swapfile.",
+    engine: "SurrealDB",
+  },
+  {
+    id: "postgres",
+    title: "Modern Web (PostgreSQL 16 + Caddy + Swap)",
+    desc: "PostgreSQL 16 tuned for low-memory VPS environments with Caddy.",
+    engine: "PostgreSQL 16",
+  },
+  {
+    id: "mysql",
+    title: "Classic LEMP (MariaDB/MySQL + Caddy + Swap)",
+    desc: "MariaDB with low-memory InnoDB configuration and Caddy.",
+    engine: "MariaDB",
+  },
+  {
+    id: "base",
+    title: "Base Web Stack (Caddy + Swap Only)",
+    desc: "No database daemon. Best for SQLite, flat-file, or external cloud databases.",
+    engine: "None (SQLite/External)",
+  },
 ];
 
 export default function BootstrapModal({
@@ -26,29 +43,27 @@ export default function BootstrapModal({
   server,
   logs = [],
   status = "idle", // "idle" | "running" | "success" | "failed"
+  onStartBootstrap,
   onCancel,
 }) {
-  const [currentStep, setCurrentStep] = useState("detect");
+  const [selectedPreset, setSelectedPreset] = useState("esper");
+  const [dbUser, setDbUser] = useState("root");
+  const [dbPassword, setDbPassword] = useState("");
+  const [dbName, setDbName] = useState("production");
+  const [surrealStorage, setSurrealStorage] = useState("surrealkv");
+  const [surrealNs, setSurrealNs] = useState("esper");
   const [copied, setCopied] = useState(false);
+
   const logContainerRef = useRef(null);
 
-  // Parse step tags from live logs
+  // Reset the form each time the modal opens for a fresh provisioning run
   useEffect(() => {
-    if (logs.length > 0) {
-      const lastLine = logs[logs.length - 1];
-      const match = lastLine.match(/\[STEP:([a-z0-9_-]+)\]/);
-      if (match && match[1]) {
-        setCurrentStep(match[1]);
-      }
+    if (isOpen && status === "idle") {
+      setSelectedPreset("esper");
+      setDbPassword("");
     }
-  }, [logs]);
+  }, [isOpen, status]);
 
-  // Reset step tracker each time the modal opens
-  useEffect(() => {
-    if (isOpen) setCurrentStep("detect");
-  }, [isOpen]);
-
-  // Keep terminal scrolled to bottom
   useEffect(() => {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
@@ -56,6 +71,19 @@ export default function BootstrapModal({
   }, [logs]);
 
   if (!isOpen) return null;
+
+  const handleStart = () => {
+    onStartBootstrap({
+      stackType: selectedPreset,
+      dbUser: selectedPreset === "esper" ? dbUser || "root" : dbUser || "skiff_user",
+      dbPassword: dbPassword || (selectedPreset === "esper" ? "root" : "skiff_secure_pass"),
+      dbName: dbName || "production",
+      surrealStorage,
+      surrealNs: surrealNs || "esper",
+      enableSwap: true,
+      installCaddy: true,
+    });
+  };
 
   const handleCopyLogs = async () => {
     try {
@@ -78,7 +106,7 @@ export default function BootstrapModal({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-white tracking-tight">VPS Provisioning Console</h3>
+                <h3 className="text-sm font-bold text-white tracking-tight">Provision VPS Stack</h3>
                 {status === "running" && (
                   <span className="flex items-center gap-1 text-[10px] font-mono text-indigo-300 bg-indigo-950/80 px-2 py-0.5 rounded-full border border-indigo-700/60 animate-pulse">
                     <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Provisioning Live
@@ -100,131 +128,194 @@ export default function BootstrapModal({
               </p>
             </div>
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleCopyLogs}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 text-xs flex items-center gap-1 border border-slate-800 transition"
-              title="Copy Console Output"
-            >
-              <Copy className="w-3.5 h-3.5" />
-              <span>{copied ? "Copied" : "Copy Output"}</span>
-            </button>
-            <button
-              onClick={onClose}
-              disabled={status === "running"}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 transition"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            disabled={status === "running"}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 transition"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Checkpoint Timeline Bar */}
-        <div className="px-5 py-3 bg-slate-950/80 border-b border-slate-800/80 flex items-center gap-1 overflow-x-auto text-[11px] shrink-0">
-          {STAGES.map((st) => {
-            const isCurrent = currentStep === st.id;
-            const isPast =
-              STAGES.findIndex((s) => s.id === currentStep) >
-              STAGES.findIndex((s) => s.id === st.id);
-
-            return (
-              <div
-                key={st.id}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono whitespace-nowrap transition-colors ${
-                  isCurrent
-                    ? "bg-indigo-950/60 border-indigo-500 text-indigo-300 font-bold"
-                    : isPast || status === "success"
-                    ? "bg-emerald-950/20 border-emerald-800/40 text-emerald-400 font-medium"
-                    : "bg-slate-900/40 border-slate-800 text-slate-600"
-                }`}
-              >
-                {isCurrent && status === "running" ? (
-                  <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />
-                ) : isPast || status === "success" ? (
-                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                ) : (
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-700" />
-                )}
-                <span>{st.label}</span>
+        {/* VIEW A: PRE-FLIGHT STACK SELECTION */}
+        {status === "idle" && (
+          <div className="p-6 space-y-5 overflow-y-auto flex-1">
+            <div>
+              <span className="text-[10px] font-mono uppercase text-slate-400 block mb-2 font-semibold">
+                Select Purpose &amp; Database Stack
+              </span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {STACK_PRESETS.map((p) => {
+                  const isSelected = selectedPreset === p.id;
+                  return (
+                    <div
+                      key={p.id}
+                      onClick={() => setSelectedPreset(p.id)}
+                      className={`p-4 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
+                        isSelected
+                          ? "bg-indigo-950/60 border-indigo-500 text-white ring-1 ring-indigo-500/40"
+                          : "bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700"
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-1 gap-2">
+                          <h4 className="text-xs font-bold text-white">{p.title}</h4>
+                          {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">{p.desc}</p>
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-slate-800/80 text-[10px] font-mono text-slate-500">
+                        Database: {p.engine}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
-        </div>
-
-        {/* Live Terminal Output Window */}
-        <div
-          ref={logContainerRef}
-          className="flex-1 bg-black p-4 font-mono text-[11px] overflow-y-auto space-y-1 select-text"
-        >
-          <div className="text-slate-600 border-b border-slate-900 pb-2 mb-2 flex items-center justify-between text-[10px]">
-            <span className="flex items-center gap-1.5">
-              <Terminal className="w-3 h-3 text-indigo-400" /> Sudo Stdin Shell Session
-            </span>
-            <span>Unbuffered TTY Feed</span>
-          </div>
-
-          {logs.length === 0 && (
-            <div className="text-slate-500 py-8 text-center animate-pulse">
-              Connecting to VPS via SSH &amp; initiating script pipeline...
             </div>
-          )}
 
-          {logs.map((log, index) => {
-            const isOk = log.includes("[OK]");
-            const isAction = log.includes("[ACTION]");
-            const isStep = log.includes("==> [STEP:");
-            const isError = log.toLowerCase().includes("error") || log.toLowerCase().includes("failed");
+            {/* Preset-specific credentials */}
+            {selectedPreset !== "base" && (
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold block">
+                  Database Credentials Setup
+                </span>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">User</label>
+                    <input
+                      value={dbUser}
+                      onChange={(e) => setDbUser(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">Password</label>
+                    <input
+                      type="password"
+                      placeholder={selectedPreset === "esper" ? "root (default)" : "skiff_secure_pass (default)"}
+                      value={dbPassword}
+                      onChange={(e) => setDbPassword(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">
+                      {selectedPreset === "esper" ? "Database" : "Database Name"}
+                    </label>
+                    <input
+                      value={dbName}
+                      onChange={(e) => setDbName(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
 
-            return (
-              <div
-                key={index}
-                className={`leading-relaxed whitespace-pre-wrap break-all ${
-                  isStep
-                    ? "text-indigo-300 font-bold mt-2"
-                    : isOk
-                    ? "text-emerald-400 font-medium"
-                    : isAction
-                    ? "text-amber-300"
-                    : isError
-                    ? "text-rose-400 font-semibold"
-                    : "text-slate-300"
-                }`}
-              >
-                {log}
+                {selectedPreset === "esper" && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-mono text-slate-500 block mb-1">SurrealDB Storage Backend</label>
+                      <CustomSelect
+                        value={surrealStorage}
+                        onChange={setSurrealStorage}
+                        options={[
+                          { value: "surrealkv", label: "SurrealKV (Embedded Engine)" },
+                          { value: "file", label: "File (Classic Key-Value)" },
+                          { value: "rocksdb", label: "RocksDB (High-Concurrency)" },
+                        ]}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-mono text-slate-500 block mb-1">Namespace</label>
+                      <input
+                        value={surrealNs}
+                        onChange={(e) => setSurrealNs(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
-            );
-          })}
-        </div>
-
-        {/* Footer Actions */}
-        <div className="px-5 py-3 border-t border-slate-800 bg-slate-900/90 flex items-center justify-between shrink-0">
-          <span className="text-[11px] text-slate-400 font-mono">
-            {status === "running" && "Executing commands without overwriting existing data..."}
-            {status === "success" && "Host verified & ready for atomic deployments."}
-            {status === "failed" && "Review error logs above to troubleshoot."}
-          </span>
-
-          <div className="flex items-center gap-2">
-            {status === "running" ? (
-              <button
-                type="button"
-                onClick={onCancel}
-                className="px-3.5 py-1.5 rounded-lg text-xs bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/60 font-semibold transition"
-              >
-                Abort Provisioning
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-1.5 rounded-lg text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition"
-              >
-                Done
-              </button>
             )}
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={handleStart}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/30 transition active:scale-95"
+              >
+                Start Provisioning
+              </button>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* VIEW B: REAL-TIME CONSOLE STREAM */}
+        {status !== "idle" && (
+          <div className="flex-1 flex flex-col overflow-hidden bg-black min-h-0">
+            <div className="p-3 bg-slate-950 border-b border-slate-900 flex items-center justify-between text-xs shrink-0">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                <span className="font-mono text-slate-300">Live Unbuffered SSH Stream</span>
+                {status === "running" && <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />}
+              </div>
+              <button
+                onClick={handleCopyLogs}
+                className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-400 text-[11px] flex items-center gap-1 border border-slate-800 transition"
+              >
+                <Copy className="w-3 h-3" />
+                <span>{copied ? "Copied" : "Copy Output"}</span>
+              </button>
+            </div>
+
+            <div ref={logContainerRef} className="flex-1 p-4 overflow-y-auto font-mono text-[11px] space-y-1 select-text">
+              {logs.length === 0 && (
+                <div className="text-slate-500 py-8 text-center animate-pulse">
+                  Connecting to VPS via SSH &amp; initiating script pipeline...
+                </div>
+              )}
+              {logs.map((log, i) => (
+                <div
+                  key={i}
+                  className={`leading-relaxed whitespace-pre-wrap break-all ${
+                    log.includes("[OK]")
+                      ? "text-emerald-400"
+                      : log.includes("[ACTION]")
+                      ? "text-amber-300"
+                      : log.includes("==> [STEP:")
+                      ? "text-indigo-300 font-bold mt-2"
+                      : log.toLowerCase().includes("error") || log.toLowerCase().includes("failed")
+                      ? "text-rose-400 font-semibold"
+                      : "text-slate-300"
+                  }`}
+                >
+                  {log}
+                </div>
+              ))}
+            </div>
+
+            <div className="p-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between shrink-0">
+              <span className="text-[11px] text-slate-400 font-mono">
+                {status === "running" && "Executing without overwriting existing data..."}
+                {status === "success" && "Host verified & ready for atomic deployments."}
+                {status === "failed" && "Review error logs above to troubleshoot."}
+              </span>
+              {status === "running" ? (
+                <button
+                  onClick={onCancel}
+                  className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold transition"
+                >
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  onClick={onClose}
+                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition"
+                >
+                  Done
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

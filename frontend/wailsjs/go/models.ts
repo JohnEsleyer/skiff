@@ -1,5 +1,70 @@
+export namespace bootstrap {
+	
+	export class StackConfig {
+	    stackType: string;
+	    dbUser: string;
+	    dbPassword: string;
+	    dbName: string;
+	    surrealStorage: string;
+	    surrealNs: string;
+	    enableSwap: boolean;
+	    installCaddy: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new StackConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.stackType = source["stackType"];
+	        this.dbUser = source["dbUser"];
+	        this.dbPassword = source["dbPassword"];
+	        this.dbName = source["dbName"];
+	        this.surrealStorage = source["surrealStorage"];
+	        this.surrealNs = source["surrealNs"];
+	        this.enableSwap = source["enableSwap"];
+	        this.installCaddy = source["installCaddy"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
+	export class DatabaseInfo {
+	    engine: string;
+	    port: number;
+	    user: string;
+	    password: string;
+	    database: string;
+	    namespace?: string;
+	    storageType: string;
+	    dataPath: string;
+	    command: string;
+	    connectionString: string;
+	    surrealistUri?: string;
+	    active: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DatabaseInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.engine = source["engine"];
+	        this.port = source["port"];
+	        this.user = source["user"];
+	        this.password = source["password"];
+	        this.database = source["database"];
+	        this.namespace = source["namespace"];
+	        this.storageType = source["storageType"];
+	        this.dataPath = source["dataPath"];
+	        this.command = source["command"];
+	        this.connectionString = source["connectionString"];
+	        this.surrealistUri = source["surrealistUri"];
+	        this.active = source["active"];
+	    }
+	}
 	export class ServiceStatus {
 	    name: string;
 	    active: boolean;

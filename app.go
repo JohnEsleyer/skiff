@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"skiff/pkg/bootstrap"
 	"skiff/pkg/deployer"
@@ -122,7 +124,7 @@ func (a *App) GetServerOverview(serverID string) (*ServerOverview, error) {
 	}
 
 	checkServicesCmd := `sh -c '
-for s in caddy surrealdb; do
+for s in caddy surrealdb postgresql mariadb; do
   STATUS=$(systemctl is-active $s 2>/dev/null || echo "inactive")
   echo "$s:$STATUS"
 done
@@ -278,6 +280,12 @@ func (a *App) StopLogStream() {
 }
 
 func (a *App) BootstrapVPS(serverID string) error {
+	return a.BootstrapVPSWithStack(serverID, bootstrap.DefaultStackConfig())
+}
+
+// BootstrapVPSWithStack provisions the VPS with the selected stack preset,
+// streaming live output via bootstrap:log / bootstrap:status events.
+func (a *App) BootstrapVPSWithStack(serverID string, cfg bootstrap.StackConfig) error {
 	srv, err := a.store.GetServer(serverID)
 	if err != nil {
 		return err
@@ -288,6 +296,7 @@ func (a *App) BootstrapVPS(serverID string) error {
 		return fmt.Errorf("SSH connection failed: %w", err)
 	}
 
+	script := bootstrap.GenerateScript(cfg)
 	runner := bootstrap.NewRunner(client)
 
 	if a.stopLog != nil {
@@ -299,7 +308,7 @@ func (a *App) BootstrapVPS(serverID string) error {
 		defer client.Close()
 		runtime.EventsEmit(a.ctx, "bootstrap:status", "running")
 
-		err := runner.Execute(func(line string) {
+		err := runner.ExecuteScript(script, func(line string) {
 			runtime.EventsEmit(a.ctx, "bootstrap:log", line)
 		}, a.stopLog)
 
@@ -319,4 +328,182 @@ func (a *App) CancelBootstrap() {
 		close(a.stopLog)
 		a.stopLog = nil
 	}
+}
+
+// ----------------- Database Management -----------------
+
+type DatabaseInfo struct {
+	Engine           string `json:"engine"`
+	Port             int    `json:"port"`
+	User             string `json:"user"`
+	Password         string `json:"password"`
+	Database         string `json:"database"`
+	Namespace        string `json:"namespace,omitempty"`
+	StorageType      string `json:"storageType"`
+	DataPath         string `json:"dataPath"`
+	Command          string `json:"command"`
+	ConnectionString string `json:"connectionString"`
+	SurrealistURI    string `json:"surrealistUri,omitempty"`
+	Active           bool   `json:"active"`
+}
+
+// dbServiceName maps a skiff dbType to its systemd unit.
+func dbServiceName(dbType string) string {
+	switch dbType {
+	case "postgres":
+		return "postgresql"
+	case "mysql":
+		return "mariadb"
+	default:
+		return dbType // surrealdb
+	}
+}
+
+// readDatabaseInfo loads /opt/skiff/data/<dbType>/info.json from the VPS.
+func readDatabaseInfo(client *sshclient.Client, dbType string) (*DatabaseInfo, error) {
+	cmd := fmt.Sprintf("cat /opt/skiff/data/%s/info.json 2>/dev/null || echo '{}'", dbType)
+	raw, err := client.RunCommand(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(raw) == "{}" || strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("database info for %s not found on VPS (was it provisioned?)", dbType)
+	}
+
+	var info DatabaseInfo
+	if err := json.Unmarshal([]byte(raw), &info); err != nil {
+		return nil, fmt.Errorf("malformed database info for %s: %w", dbType, err)
+	}
+	return &info, nil
+}
+
+// GetDatabaseInfo returns connection details, storage backend, launch command
+// and live service state for a managed database.
+func (a *App) GetDatabaseInfo(serverID, dbType string) (*DatabaseInfo, error) {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	info, err := readDatabaseInfo(client, dbType)
+	if err != nil {
+		return nil, err
+	}
+
+	status, _ := client.RunCommand(fmt.Sprintf("systemctl is-active %s 2>/dev/null || echo inactive", dbServiceName(dbType)))
+	info.Active = strings.TrimSpace(status) == "active"
+
+	switch dbType {
+	case "surrealdb":
+		info.SurrealistURI = fmt.Sprintf("ws://%s:%d/rpc", srv.Host, info.Port)
+		info.ConnectionString = fmt.Sprintf("http://%s:%s@%s:%d/sql", info.User, info.Password, srv.Host, info.Port)
+	case "postgres":
+		info.ConnectionString = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?sslmode=prefer",
+			info.User, info.Password, srv.Host, info.Port, info.Database)
+	case "mysql":
+		info.ConnectionString = fmt.Sprintf("mysql://%s:%s@%s:%d/%s",
+			info.User, info.Password, srv.Host, info.Port, info.Database)
+	}
+
+	return info, nil
+}
+
+// shellSingleQuote wraps a value in single quotes for remote shell use.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// BackupAndDownloadDatabase dumps the remote database, then streams the dump
+// file over SSH into a local file chosen via the native save dialog.
+// Returns the local path, or an error (including user cancellation).
+func (a *App) BackupAndDownloadDatabase(serverID, dbType string) (string, error) {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return "", err
+	}
+
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	timestamp := time.Now().Format("20060102_150405")
+	var defaultFilename, dumpCmd, remoteFile string
+
+	switch dbType {
+	case "surrealdb":
+		info, err := readDatabaseInfo(client, dbType)
+		if err != nil {
+			return "", err
+		}
+		defaultFilename = fmt.Sprintf("surreal_backup_%s.surql", timestamp)
+		remoteFile = fmt.Sprintf("/opt/skiff/backups/surrealdb_backup_%s.surql", timestamp)
+		dumpCmd = fmt.Sprintf("surreal export --conn http://127.0.0.1:%d --user %s --pass %s --ns %s --db %s %s",
+			info.Port,
+			shellSingleQuote(info.User), shellSingleQuote(info.Password),
+			shellSingleQuote(info.Namespace), shellSingleQuote(info.Database),
+			shellSingleQuote(remoteFile))
+	case "postgres":
+		defaultFilename = fmt.Sprintf("postgres_backup_%s.sql", timestamp)
+		remoteFile = fmt.Sprintf("/opt/skiff/backups/postgres_backup_%s.sql", timestamp)
+		dumpCmd = fmt.Sprintf("sudo -u postgres pg_dumpall > %s", shellSingleQuote(remoteFile))
+	case "mysql":
+		defaultFilename = fmt.Sprintf("mysql_backup_%s.sql", timestamp)
+		remoteFile = fmt.Sprintf("/opt/skiff/backups/mysql_backup_%s.sql", timestamp)
+		dumpCmd = fmt.Sprintf("sudo mysqldump --all-databases > %s", shellSingleQuote(remoteFile))
+	default:
+		return "", fmt.Errorf("unsupported database type: %s", dbType)
+	}
+
+	// 1. Local save destination (native dialog; empty = user cancelled)
+	localPath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save Database Backup",
+		DefaultFilename: defaultFilename,
+	})
+	if err != nil || localPath == "" {
+		return "", fmt.Errorf("backup cancelled")
+	}
+
+	// 2. Run the remote dump
+	if _, err := client.RunCommand(fmt.Sprintf("mkdir -p /opt/skiff/backups && %s", dumpCmd)); err != nil {
+		return "", fmt.Errorf("remote database dump failed: %w", err)
+	}
+
+	// 3. Stream the dump file down over SSH
+	session, err := client.GetRawSSHClient().NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+
+	if err := session.Start(fmt.Sprintf("cat %s", shellSingleQuote(remoteFile))); err != nil {
+		return "", err
+	}
+
+	outFile, err := os.Create(localPath)
+	if err != nil {
+		return "", err
+	}
+	defer outFile.Close()
+
+	if _, err := io.Copy(outFile, stdout); err != nil {
+		return "", fmt.Errorf("download interrupted: %w", err)
+	}
+
+	if err := session.Wait(); err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
+	}
+
+	return localPath, nil
 }
