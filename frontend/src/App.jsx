@@ -831,8 +831,8 @@ export default function App() {
         {activeView === "deployments" && (
           <div className="flex-1 flex overflow-hidden">
             {/* Sidebar Projects */}
-            <aside className="w-60 border-r border-slate-800 bg-slate-900/40 p-3.5 flex flex-col justify-between shrink-0">
-              <div className="space-y-3">
+            <aside className="w-60 border-r border-slate-800 bg-slate-900/40 p-3.5 flex flex-col justify-between shrink-0 min-h-0">
+              <div className="space-y-3 flex-1 min-h-0 overflow-y-auto custom-scroll pr-1">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-bold">
                     Recipes ({filteredProjects.length})
@@ -894,8 +894,8 @@ export default function App() {
               )}
             </aside>
 
-            {/* Central Cockpit */}
-            <div className="flex-1 flex flex-col p-5 space-y-3.5 overflow-hidden">
+            {/* Central Cockpit (scrolls with custom bar when viewport is short) */}
+            <div className="flex-1 flex flex-col p-5 space-y-3.5 overflow-y-auto custom-scroll min-h-0 min-w-0">
               {activeProject ? (
                 <>
                   {/* Top Bar: Title, Deployed State & Redeploy/Ship Button */}
@@ -1246,7 +1246,7 @@ export default function App() {
                   {/* TWO-COLUMN LAYOUT: RELEASES LIST (LEFT) & DOMAIN/LOGS (RIGHT) */}
                   <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-3.5 overflow-hidden min-h-0">
                     {/* LEFT COLUMN: RELEASES COLUMN LIST WITH DELETE BUTTON */}
-                    <div className="md:col-span-5 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col overflow-hidden">
+                    <div className="md:col-span-5 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col overflow-hidden min-h-0 min-w-0">
                       <div className="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
                         <div className="flex items-center gap-2">
                           <Layers className="w-3.5 h-3.5 text-indigo-400" />
@@ -1265,7 +1265,7 @@ export default function App() {
                         </button>
                       </div>
 
-                      <div className="flex-1 overflow-y-auto space-y-2 py-3">
+                      <div className="flex-1 overflow-y-auto custom-scroll space-y-2 py-3">
                         {releasesList.map((rel) => {
                           const isBusy = deletingReleaseId === rel.id || activatingReleaseId === rel.id;
                           return (
@@ -1338,7 +1338,7 @@ export default function App() {
                     </div>
 
                     {/* RIGHT COLUMN: DOMAIN MANAGEMENT & LOGS TABS */}
-                    <div className="md:col-span-7 flex flex-col overflow-hidden space-y-2">
+                    <div className="md:col-span-7 flex flex-col overflow-hidden min-h-0 min-w-0 space-y-2">
                       <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 shrink-0">
                         <div className="flex items-center gap-1.5">
                           <button
@@ -1367,7 +1367,7 @@ export default function App() {
                       </div>
 
                       {deployCockpitTab === "domain" && (
-                        <div className="flex-1 overflow-y-auto">
+                        <div className="flex-1 overflow-y-auto custom-scroll">
                           <DeployDomainSection
                             server={selectedServer}
                             project={activeProject}
@@ -1381,7 +1381,7 @@ export default function App() {
                       )}
 
                       {deployCockpitTab === "terminal" && (
-                        <div className="flex-1 bg-black border border-slate-800 rounded-2xl p-3.5 font-mono text-[11px] overflow-y-auto space-y-1">
+                        <div className="flex-1 bg-black border border-slate-800 rounded-2xl p-3.5 font-mono text-[11px] overflow-y-auto custom-scroll space-y-1">
                           <div className="text-slate-600 border-b border-slate-900 pb-2 mb-2 flex items-center justify-between">
                             <span className="text-emerald-500 text-[10px]">[PIPELINE STREAM]</span>
                             <button
