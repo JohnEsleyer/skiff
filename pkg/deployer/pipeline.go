@@ -1,10 +1,13 @@
 package deployer
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,17 +42,12 @@ func (p *Pipeline) step(stepName string, status string) {
 	}
 }
 
-// RemoteDbCredentials holds the bootstrapped database login used to
-// inject environment variables into remote setup steps.
 type RemoteDbCredentials struct {
 	User     string
 	Password string
 	Port     int
 }
 
-// discoverRemoteDbCredentials reads /opt/skiff/data/surrealdb/info.json when
-// present. Missing file (e.g. base stack) yields empty credentials — setup
-// scripts must tolerate that.
 func discoverRemoteDbCredentials(client *sshclient.Client, p *Pipeline) RemoteDbCredentials {
 	var creds RemoteDbCredentials
 	raw, _ := client.RunCommand("cat /opt/skiff/data/surrealdb/info.json 2>/dev/null || echo '{}'")
@@ -78,6 +76,15 @@ func discoverRemoteDbCredentials(client *sshclient.Client, p *Pipeline) RemoteDb
 	return creds
 }
 
+func isLoopbackURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return strings.Contains(rawURL, "127.0.0.1") || strings.Contains(rawURL, "localhost")
+	}
+	h := u.Hostname()
+	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
 func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	p.log(fmt.Sprintf("=== Initiating Deployment for '%s' ===", project.Name))
 
@@ -101,7 +108,6 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	releaseDir := fmt.Sprintf("%s/releases/%s", project.AppDir, releaseID)
 	sharedDir := fmt.Sprintf("%s/shared", project.AppDir)
 
-	// Ensure remote skeleton directories
 	setupCmd := fmt.Sprintf("mkdir -p %s %s", shellQuote(releaseDir), shellQuote(sharedDir))
 	for _, s := range project.SharedFiles {
 		if strings.Contains(s, "/") {
@@ -113,7 +119,6 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 		return fmt.Errorf("remote directory setup failed: %w", err)
 	}
 
-	// Discover bootstrapped database credentials for remote setup injection.
 	dbCreds := discoverRemoteDbCredentials(client, p)
 	p.step("preflight", "success")
 
@@ -143,7 +148,7 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	}
 	p.step("transfer", "success")
 
-	// 5. Remote Setup & Migrations (executed inside releaseDir with DB env vars)
+	// 5. Remote Setup & Migrations
 	if len(project.RemoteSetupSteps) > 0 {
 		p.step("setup", "running")
 		p.log(fmt.Sprintf("Executing %d remote setup step(s)...", len(project.RemoteSetupSteps)))
@@ -182,26 +187,21 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	p.log("Updating atomic symlinks and restarting services...")
 
 	var activateScript strings.Builder
-	// Ensure executable bit on all root binaries
 	activateScript.WriteString(fmt.Sprintf("chmod +x %s/* 2>/dev/null || true; ", shellQuote(releaseDir)))
 
-	// Link shared directories/files into the new release
 	for _, item := range project.SharedFiles {
 		activateScript.WriteString(fmt.Sprintf("ln -sfn %s %s; ",
 			shellQuote(fmt.Sprintf("%s/%s", sharedDir, item)),
 			shellQuote(fmt.Sprintf("%s/%s", releaseDir, item))))
 	}
 
-	// Atomically point `current` to new release
 	activateScript.WriteString(fmt.Sprintf("ln -sfn %s %s; ",
 		shellQuote(releaseDir), shellQuote(fmt.Sprintf("%s/current", project.AppDir))))
 
-	// Execute service restart
 	if project.RestartCommand != "" {
 		activateScript.WriteString(project.RestartCommand + "; ")
 	}
 
-	// Release pruning
 	keep := project.KeepReleases
 	if keep <= 0 {
 		keep = 3
@@ -213,29 +213,52 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 		p.step("activate", "failed")
 		return fmt.Errorf("activation script failed: %w", err)
 	}
+
+	// Synchronize Caddy routing and open firewall port
+	if err := syncCaddyRoute(client, p, project, server.Host); err != nil {
+		p.log(fmt.Sprintf("  [WARNING] Caddy route sync: %s", err))
+	}
 	p.step("activate", "success")
 
-	// 7. Verification Probe
+	// 7. Verification Probe (F5 Fix: Loopback probes run over SSH on the VPS)
 	if project.HealthURL != "" {
 		p.step("verify", "running")
-		p.log(fmt.Sprintf("Probing health endpoint: %s", project.HealthURL))
-
 		verified := false
-		httpClient := &http.Client{Timeout: 5 * time.Second}
-		for i := 1; i <= 6; i++ {
-			time.Sleep(1 * time.Second)
-			resp, err := httpClient.Get(project.HealthURL)
-			if err == nil {
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-				if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-					p.log(fmt.Sprintf("Health check verified (HTTP %d)", resp.StatusCode))
+
+		if isLoopbackURL(project.HealthURL) {
+			p.log(fmt.Sprintf("Probing loopback endpoint on VPS via SSH: %s", project.HealthURL))
+			for i := 1; i <= 6; i++ {
+				time.Sleep(1 * time.Second)
+				curlCmd := fmt.Sprintf("curl -s -o /dev/null -w '%%{http_code}' -m 3 %s 2>/dev/null || echo 'ERR'",
+					shellQuote(project.HealthURL))
+				out, err := client.RunCommand(curlCmd)
+				code := strings.TrimSpace(out)
+				if err == nil && len(code) == 3 && strings.HasPrefix(code, "2") {
+					p.log(fmt.Sprintf("Health check verified over SSH (HTTP %s)", code))
 					verified = true
 					break
 				}
+				p.log(fmt.Sprintf("Attempt %d/6: waiting for local backend (code: %s)...", i, code))
 			}
-			p.log(fmt.Sprintf("Attempt %d/6: waiting for server response...", i))
+		} else {
+			p.log(fmt.Sprintf("Probing public health endpoint from desktop: %s", project.HealthURL))
+			httpClient := &http.Client{Timeout: 5 * time.Second}
+			for i := 1; i <= 6; i++ {
+				time.Sleep(1 * time.Second)
+				resp, err := httpClient.Get(project.HealthURL)
+				if err == nil {
+					_, _ = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+						p.log(fmt.Sprintf("Health check verified (HTTP %d)", resp.StatusCode))
+						verified = true
+						break
+					}
+				}
+				p.log(fmt.Sprintf("Attempt %d/6: waiting for server response...", i))
+			}
 		}
+
 		if !verified {
 			p.step("verify", "warning")
 			p.log("Warning: health probe timed out; check service logs.")
@@ -245,6 +268,12 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	}
 
 	p.log(fmt.Sprintf("==> Deployment %s successfully completed!", releaseID))
+	if p.emitEvent != nil {
+		p.emitEvent("deploy:done", map[string]any{
+			"projectId": project.ID,
+			"releaseId": releaseID,
+		})
+	}
 	return nil
 }
 
@@ -259,7 +288,6 @@ func (p *Pipeline) Rollback(project store.ProjectConfig) error {
 	}
 	defer client.Close()
 
-	// List releases sorted by date, find previous
 	cmd := fmt.Sprintf("cd %s && ls -1dt * 2>/dev/null | sed -n '2p'", shellQuote(fmt.Sprintf("%s/releases", project.AppDir)))
 	prevRelease, err := client.RunCommand(cmd)
 	if err != nil || strings.TrimSpace(prevRelease) == "" {
@@ -277,7 +305,120 @@ func (p *Pipeline) Rollback(project store.ProjectConfig) error {
 	return err
 }
 
-// shellQuote wraps a remote path in single quotes, escaping embedded quotes.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func sanitizeSnippetName(raw string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteRune('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "app"
+	}
+	return b.String()
+}
+
+func projectSlug(project store.ProjectConfig) string {
+	if project.AppDir != "" {
+		clean := filepath.Clean(project.AppDir)
+		base := filepath.Base(clean)
+		if base != "" && base != "." && base != "/" {
+			return sanitizeSnippetName(base)
+		}
+	}
+	return sanitizeSnippetName(project.Name)
+}
+
+func syncCaddyRoute(client *sshclient.Client, p *Pipeline, project store.ProjectConfig, serverHost string) error {
+	port := project.TargetPort
+	if port <= 0 {
+		port = 8080
+	}
+	tlsMode := project.TLSMode
+	if tlsMode != "http" && tlsMode != "none" {
+		tlsMode = "auto"
+	}
+	domain := strings.TrimSpace(project.Domain)
+	slug := projectSlug(project)
+
+	// Open target port in UFW if present
+	_, _ = client.RunCommand(fmt.Sprintf("ufw allow %d/tcp comment 'Skiff App Port' >/dev/null 2>&1 || true", port))
+
+	// Check if another snippet already owns http://<serverHost> to prevent ambiguous site definition
+	checkIPConflictCmd := fmt.Sprintf(
+		`grep -l "http://%s" /opt/skiff/caddy/conf.d/*.caddy 2>/dev/null | grep -v "/%s.caddy" || true`,
+		serverHost, slug)
+	existingOwner, _ := client.RunCommand(checkIPConflictCmd)
+	existingOwner = strings.TrimSpace(existingOwner)
+
+	includeDirectIP := existingOwner == ""
+
+	var snippet string
+	if domain == "" || tlsMode == "none" {
+		if includeDirectIP && serverHost != "" {
+			snippet = fmt.Sprintf("http://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", serverHost, port)
+		} else {
+			snippet = fmt.Sprintf(":%d {\n\treverse_proxy 127.0.0.1:%d\n}\n", port, port)
+		}
+	} else if tlsMode == "http" {
+		if includeDirectIP && serverHost != "" && serverHost != domain {
+			snippet = fmt.Sprintf("http://%s, http://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", domain, serverHost, port)
+		} else {
+			snippet = fmt.Sprintf("http://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", domain, port)
+		}
+	} else {
+		// Auto TLS for domain, plain HTTP port 80 for server IP
+		if includeDirectIP && serverHost != "" && serverHost != domain {
+			snippet = fmt.Sprintf("%s {\n\treverse_proxy 127.0.0.1:%d\n}\n\nhttp://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n",
+				domain, port, serverHost, port)
+		} else {
+			snippet = fmt.Sprintf("%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", domain, port)
+		}
+	}
+
+	if !includeDirectIP && serverHost != "" {
+		p.log(fmt.Sprintf("  [INFO] http://%s is already routed by another snippet. Skipping IP block for '%s'.", serverHost, slug))
+	}
+
+	p.log(fmt.Sprintf("  Syncing Caddy route for '%s' (port %d)...", slug, port))
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(snippet))
+	setup := `mkdir -p /opt/skiff/caddy/conf.d /etc/caddy; ` +
+		`if ! grep -q '/opt/skiff/caddy/conf.d' /etc/caddy/Caddyfile 2>/dev/null; then ` +
+		`echo 'import /opt/skiff/caddy/conf.d/*.caddy' >> /etc/caddy/Caddyfile; fi`
+	if _, err := client.RunCommand(setup); err != nil {
+		return err
+	}
+	writeCmd := fmt.Sprintf("echo '%s' | base64 -d > '/opt/skiff/caddy/conf.d/%s.caddy'", encoded, slug)
+	if _, err := client.RunCommand(writeCmd); err != nil {
+		return err
+	}
+
+	// Validate config, with fallback if validate fails
+	if out, err := client.RunCommand("caddy validate --config /etc/caddy/Caddyfile 2>&1"); err != nil {
+		fallbackSnippet := fmt.Sprintf("%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", domain, port)
+		if domain == "" {
+			fallbackSnippet = fmt.Sprintf(":%d {\n\treverse_proxy 127.0.0.1:%d\n}\n", port, port)
+		}
+		fallbackEncoded := base64.StdEncoding.EncodeToString([]byte(fallbackSnippet))
+		_, _ = client.RunCommand(fmt.Sprintf("echo '%s' | base64 -d > '/opt/skiff/caddy/conf.d/%s.caddy'", fallbackEncoded, slug))
+		if outRetry, errRetry := client.RunCommand("caddy validate --config /etc/caddy/Caddyfile 2>&1"); errRetry != nil {
+			return fmt.Errorf("caddy config invalid: %s", strings.TrimSpace(out))
+		} else {
+			_ = outRetry
+		}
+	}
+
+	if _, err := client.RunCommand("systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy"); err != nil {
+		return err
+	}
+	p.log("  Caddy route synced and reloaded.")
+	return nil
 }

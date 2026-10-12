@@ -2,18 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowLeftRight,
+  Check,
   CheckCircle2,
   Copy,
   Edit2,
+  ExternalLink,
+  Globe,
   Layers,
   Play,
   Plus,
   RefreshCw,
+  RotateCw,
   Server,
   Terminal,
   Trash2,
   Wrench,
   XCircle,
+  Zap,
 } from "lucide-react";
 
 import ToastContainer from "./components/ToastContainer.jsx";
@@ -23,12 +28,11 @@ import ProjectModal from "./components/ProjectModal.jsx";
 import BootstrapModal from "./components/BootstrapModal.jsx";
 import ResetVPSModal from "./components/ResetVPSModal.jsx";
 import DatabaseManageModal from "./components/DatabaseManageModal.jsx";
+import DeployDomainSection from "./components/DeployDomainSection.jsx";
 import ServerManageView from "./components/ServerManageView.jsx";
 import CustomSelect from "./components/CustomSelect.jsx";
 
 export default function App() {
-  // Navigation: "servers" (Pick VPS) | "manage" (Manage selected VPS)
-  //             | "deployments" (Ship to selected VPS) | "logs"
   const [activeView, setActiveView] = useState("servers");
   const [servers, setServers] = useState([]);
   const [selectedServer, setSelectedServer] = useState(null);
@@ -47,6 +51,17 @@ export default function App() {
     activate: "idle",
     verify: "idle",
   });
+
+  // Track deployed release state on the target VPS
+  const [deploymentStatus, setDeploymentStatus] = useState(null);
+  const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
+  const [releasesList, setReleasesList] = useState([]);
+  const [loadingReleases, setLoadingReleases] = useState(false);
+  const [deletingReleaseId, setDeletingReleaseId] = useState(null);
+  const [activatingReleaseId, setActivatingReleaseId] = useState(null);
+
+  const [deployCockpitTab, setDeployCockpitTab] = useState("domain");
+  const [copiedIpUrl, setCopiedIpUrl] = useState(false);
 
   // Telemetry & Diagnostics
   const [telemetry, setTelemetry] = useState(null);
@@ -117,11 +132,24 @@ export default function App() {
       window.runtime.EventsOn("deploy:step", (data) =>
         setSteps((prev) => ({ ...prev, [data.step]: data.status }))
       );
+
+      window.runtime.EventsOn("deploy:success", () => {
+        setIsDeploying(false);
+        addToast("success", "Deployment Complete", "Release active on VPS.");
+        refreshAppDeploymentStatus();
+      });
+
+      window.runtime.EventsOn("deploy:done", () => {
+        setIsDeploying(false);
+        refreshAppDeploymentStatus();
+      });
+
       window.runtime.EventsOn("deploy:error", (err) => {
         setDeployLogs((prev) => [...prev, `[ERROR] ${err}`]);
         setIsDeploying(false);
         addToast("error", "Deployment Error", err, 6000);
       });
+
       window.runtime.EventsOn("remote:log", (line) =>
         setRemoteLogs((prev) => [...prev.slice(-350), line])
       );
@@ -140,12 +168,19 @@ export default function App() {
       window.runtime.EventsOn("reset:log", (line) => {
         setResetState((prev) => ({ ...prev, logs: [...prev.logs, line] }));
       });
+
+      // Resetting VPS removes all deployments both on the host and in local recipes
       window.runtime.EventsOn("reset:status", (status) => {
         setResetState((prev) => ({ ...prev, status }));
         if (status === "success") {
-          addToast("success", "VPS Reset Complete", "Server is clean and ready to bootstrap.");
+          addToast("success", "VPS Reset Complete", "Server wiped and all deployment recipes cleared.");
+          loadData();
+          setActiveProject(null);
+          setDeploymentStatus(null);
+          setReleasesList([]);
         }
       });
+
       window.runtime.EventsOn("reset:error", (err) => {
         addToast("error", "Reset Failed", err, 6000);
       });
@@ -155,6 +190,8 @@ export default function App() {
       if (window.runtime) {
         window.runtime.EventsOff("deploy:log");
         window.runtime.EventsOff("deploy:step");
+        window.runtime.EventsOff("deploy:success");
+        window.runtime.EventsOff("deploy:done");
         window.runtime.EventsOff("deploy:error");
         window.runtime.EventsOff("remote:log");
         window.runtime.EventsOff("bootstrap:log");
@@ -189,6 +226,49 @@ export default function App() {
       addToast("error", "Storage Read Error", String(err));
     }
   };
+
+  const refreshAppDeploymentStatus = async (showToast = false) => {
+    if (!activeProject || !selectedServer || !window.go?.main?.App?.GetProjectDeploymentStatus) {
+      setDeploymentStatus(null);
+      setReleasesList([]);
+      return;
+    }
+    setIsRefreshingStatus(true);
+    try {
+      const res = await window.go.main.App.GetProjectDeploymentStatus(
+        selectedServer.id,
+        activeProject.appDir,
+        activeProject.name
+      );
+      setDeploymentStatus(res);
+      await loadReleasesList();
+      if (showToast) {
+        addToast("info", "Refreshed", "Live deployment and release status updated.");
+      }
+    } catch {
+      setDeploymentStatus(null);
+    } finally {
+      setIsRefreshingStatus(false);
+    }
+  };
+
+  const loadReleasesList = async () => {
+    if (!activeProject || !selectedServer || !window.go?.main?.App?.GetAppReleases) return;
+    setLoadingReleases(true);
+    try {
+      const rels = await window.go.main.App.GetAppReleases(selectedServer.id, activeProject.appDir);
+      setReleasesList(rels || []);
+    } catch {
+      setReleasesList([]);
+    } finally {
+      setLoadingReleases(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshAppDeploymentStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject?.id, selectedServer?.id]);
 
   const handleSelectServerCard = (srv) => {
     setSelectedServer(srv);
@@ -261,9 +341,43 @@ export default function App() {
     }
   };
 
+  const handleDeleteDeploymentPrompt = (proj) => {
+    if (!proj) return;
+    setConfirmState({
+      isOpen: true,
+      title: "Delete Deployment & Remote Files?",
+      message: `Permanently delete "${proj.name}"? This stops the app service, removes its Caddy route, wipes "${proj.appDir}" from the VPS, and deletes this recipe.`,
+      confirmText: "Delete Deployment",
+      isDestructive: true,
+      isLoading: false,
+      onConfirm: async () => {
+        setConfirmState((prev) => ({ ...prev, isLoading: true }));
+        try {
+          await window.go.main.App.DeleteProjectDeployment(
+            selectedServer?.id || proj.serverId,
+            proj.id,
+            proj.appDir,
+            proj.name
+          );
+          addToast("info", "Deployment Deleted", `${proj.name} removed from VPS and local recipes.`);
+          const remaining = projects.filter((p) => p.id !== proj.id);
+          setProjects(remaining);
+          setActiveProject(remaining.length > 0 ? remaining[0] : null);
+          setDeploymentStatus(null);
+          setReleasesList([]);
+        } catch (err) {
+          addToast("error", "Deletion Failed", String(err));
+        } finally {
+          setConfirmState((prev) => ({ ...prev, isOpen: false, isLoading: false }));
+        }
+      },
+    });
+  };
+
   const handleStartDeploy = async () => {
     if (!activeProject || isDeploying) return;
     setIsDeploying(true);
+    setDeployCockpitTab("terminal");
     setDeployLogs([]);
     setSteps({ preflight: "idle", build: "idle", transfer: "idle", setup: "idle", activate: "idle", verify: "idle" });
     addToast("info", "Deploying", `Shipping ${activeProject.name} to ${selectedServer?.name || "VPS"}`);
@@ -276,34 +390,55 @@ export default function App() {
     }
   };
 
-  const handleRollbackPrompt = () => {
-    if (!activeProject) return;
+  const handleDeleteReleasePrompt = (rel) => {
+    if (!activeProject || !selectedServer || rel.isCurrent) return;
     setConfirmState({
       isOpen: true,
-      title: "Atomic Rollback",
-      message: `Switch symlink on "${activeProject.name}" to the previous release and restart service?`,
-      confirmText: "Rollback Release",
-      isDestructive: false,
+      title: "Delete Release Artifact?",
+      message: `Permanently remove release "${rel.ID}" (${rel.size}) from the VPS? This cannot be undone.`,
+      confirmText: "Delete Release",
+      isDestructive: true,
       isLoading: false,
       onConfirm: async () => {
-        setConfirmState((prev) => ({ ...prev, isLoading: true }));
+        setDeletingReleaseId(rel.ID);
         try {
-          await window.go.main.App.RollbackProject(activeProject.id);
-          addToast("success", "Rollback Executed", "Symlink swapped to prior release.");
+          await window.go.main.App.DeleteAppRelease(selectedServer.id, activeProject.appDir, rel.ID);
+          addToast("info", "Release Removed", `Deleted ${rel.ID}`);
+          loadReleasesList();
         } catch (err) {
-          addToast("error", "Rollback Failed", String(err));
+          addToast("error", "Delete Failed", String(err));
         } finally {
-          setConfirmState((prev) => ({ ...prev, isOpen: false, isLoading: false }));
+          setDeletingReleaseId(null);
+          setConfirmState((prev) => ({ ...prev, isOpen: false }));
         }
       },
     });
+  };
+
+  const handleActivateRelease = async (rel) => {
+    if (!activeProject || !selectedServer || rel.isCurrent) return;
+    setActivatingReleaseId(rel.ID);
+    try {
+      await window.go.main.App.ActivateAppRelease(
+        selectedServer.id,
+        activeProject.appDir,
+        rel.ID,
+        activeProject.restartCommand || "true"
+      );
+      addToast("success", "Release Swapped", `Symlink pointing to release ${rel.ID}`);
+      refreshAppDeploymentStatus();
+    } catch (err) {
+      addToast("error", "Switch Failed", String(err));
+    } finally {
+      setActivatingReleaseId(null);
+    }
   };
 
   const handleBootstrapPrompt = (srv) => {
     setConfirmState({
       isOpen: true,
       title: "Bootstrap Low-End VPS",
-      message: `Open the stack provisioner for ${srv.host}? You will pick a preset (Esper/SurrealDB, PostgreSQL, MySQL, or Base) and watch live output. Already-installed components are skipped, never wiped. Continue?`,
+      message: `Open the stack provisioner for ${srv.host}? Already-installed components are skipped. Continue?`,
       confirmText: "Open Provisioner",
       isDestructive: false,
       isLoading: false,
@@ -315,8 +450,6 @@ export default function App() {
   };
 
   const handleOpenBootstrap = (srv) => {
-    // Open the modal on the stack-selection view; provisioning starts
-    // only after the user picks a preset and clicks Start Provisioning.
     setBootstrapState({ isOpen: true, server: srv, logs: [], status: "idle" });
   };
 
@@ -330,7 +463,6 @@ export default function App() {
     });
   };
 
-  // Database connection manager modal (surrealdb | postgres | mysql)
   const [dbModal, setDbModal] = useState({ isOpen: false, dbType: "surrealdb" });
   const handleOpenDatabaseModal = (dbType) => {
     if (!selectedServer) return;
@@ -360,13 +492,34 @@ export default function App() {
   const handleStartLogs = () => {
     if (!selectedServer) return;
     setRemoteLogs([]);
-    window.go.main.App.StartLogStream(selectedServer.id, "journalctl -u esper-server -f -n 60");
+    window.go.main.App.StartLogStream(selectedServer.id, "journalctl -u caddy -f -n 60");
   };
 
-  // Projects bound to the selected VPS
+  const handleSelectAppFromManage = (appName) => {
+    const match = projects.find(
+      (p) =>
+        (p.appDir || "").split("/").filter(Boolean).pop() === appName ||
+        p.name.toLowerCase() === appName.toLowerCase()
+    );
+    if (match) {
+      setActiveProject(match);
+    }
+    setActiveView("deployments");
+    setDeployCockpitTab("domain");
+  };
+
   const filteredProjects = projects.filter(
     (p) => !selectedServer || p.serverId === selectedServer.id
   );
+
+  const activeAppSlug = activeProject
+    ? (activeProject.appDir || "").split("/").filter(Boolean).pop() || activeProject.name
+    : "";
+
+  const isReallyDeployed = !!deploymentStatus?.isDeployed;
+
+  // Direct IP Access via Caddy port 80: bypasses local firewall blocks & DNS propagation delay
+  const directIpUrl = selectedServer?.host ? `http://${selectedServer.host}` : "";
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-200 text-xs font-sans select-none">
@@ -380,7 +533,6 @@ export default function App() {
 
           <span className="text-slate-700">/</span>
 
-          {/* Quick Switch Server Dropdown */}
           <div className="w-48">
             <CustomSelect
               value={selectedServer?.id || ""}
@@ -401,7 +553,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Global Navigation */}
         <nav className="flex items-center gap-1">
           <button
             onClick={() => setActiveView("servers")}
@@ -452,7 +603,7 @@ export default function App() {
 
       {/* Main Body */}
       <main className="flex-1 overflow-hidden flex">
-        {/* VIEW 1: SERVERS SELECTION (STEP 1) */}
+        {/* VIEW 1: SERVERS SELECTION */}
         {activeView === "servers" && (
           <div className="flex-1 p-8 max-w-4xl mx-auto overflow-y-auto space-y-6">
             <div className="flex items-center justify-between">
@@ -570,6 +721,7 @@ export default function App() {
             server={selectedServer}
             onBack={() => setActiveView("servers")}
             onOpenDeployments={() => setActiveView("deployments")}
+            onSelectAppForDeployments={handleSelectAppFromManage}
             onOpenBootstrap={() => handleBootstrapPrompt(selectedServer)}
             onOpenDatabaseModal={handleOpenDatabaseModal}
             onOpenResetModal={() => handleOpenReset(selectedServer)}
@@ -579,15 +731,15 @@ export default function App() {
           />
         )}
 
-        {/* VIEW 3: DEPLOYMENTS COCKPIT (STEP 2) */}
+        {/* VIEW 3: REDESIGNED DEPLOYMENTS COCKPIT */}
         {activeView === "deployments" && (
           <div className="flex-1 flex overflow-hidden">
             {/* Sidebar Projects */}
-            <aside className="w-64 border-r border-slate-800 bg-slate-900/40 p-4 flex flex-col justify-between shrink-0">
+            <aside className="w-60 border-r border-slate-800 bg-slate-900/40 p-3.5 flex flex-col justify-between shrink-0">
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
-                    Recipes on {selectedServer?.name}
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-bold">
+                    Recipes ({filteredProjects.length})
                   </span>
                   <button
                     onClick={() => {
@@ -613,7 +765,7 @@ export default function App() {
                       }`}
                     >
                       <div className="truncate">{p.name}</div>
-                      <div className="text-[10px] text-slate-500 font-mono truncate">{p.localPath}</div>
+                      <div className="text-[10px] text-slate-500 font-mono truncate">{p.appDir}</div>
                     </button>
                   ))}
                   {filteredProjects.length === 0 && (
@@ -625,8 +777,7 @@ export default function App() {
               </div>
 
               {activeProject && (
-                <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
-                  <span className="text-[10px] text-slate-500 uppercase font-mono block">Controls</span>
+                <div className="p-2.5 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5">
                   <button
                     onClick={() => {
                       setEditingProject(activeProject);
@@ -636,40 +787,161 @@ export default function App() {
                   >
                     <Edit2 className="w-3 h-3 text-indigo-400" /> Edit Recipe
                   </button>
+
                   <button
-                    onClick={handleRollbackPrompt}
-                    className="w-full py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 transition"
+                    onClick={() => handleDeleteDeploymentPrompt(activeProject)}
+                    className="w-full py-1.5 px-2 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/60 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 transition"
                   >
-                    <ArrowLeftRight className="w-3 h-3" /> Rollback Release
+                    <Trash2 className="w-3 h-3" /> Delete Deployment
                   </button>
                 </div>
               )}
             </aside>
 
-            {/* Central Terminal Pipeline */}
-            <div className="flex-1 flex flex-col p-6 space-y-4 overflow-hidden">
+            {/* Central Cockpit */}
+            <div className="flex-1 flex flex-col p-5 space-y-3.5 overflow-hidden">
               {activeProject ? (
                 <>
-                  <div className="flex items-center justify-between bg-slate-900 border border-slate-800 p-4 rounded-2xl">
-                    <div>
-                      <h2 className="text-base font-bold text-white">{activeProject.name}</h2>
-                      <span className="text-slate-400 font-mono text-[11px]">
-                        Target App: {activeProject.appDir} &middot; VPS: {selectedServer?.name}
-                      </span>
+                  {/* Top Bar: Title, Deployed State & Redeploy/Ship Button */}
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center justify-between gap-4">
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2.5">
+                        <h2 className="text-base font-bold text-white truncate">{activeProject.name}</h2>
+                        {isDeploying ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-700/60 font-semibold animate-pulse flex items-center gap-1 shrink-0">
+                            <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Shipping to VPS...
+                          </span>
+                        ) : isReallyDeployed ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-700/60 font-semibold flex items-center gap-1.5 shrink-0">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span>Deployed &amp; Live</span>
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700 shrink-0">
+                            Ready for Initial Deploy
+                          </span>
+                        )}
+
+                        {/* REFRESH DEPLOYMENT STATUS BUTTON */}
+                        <button
+                          type="button"
+                          onClick={() => refreshAppDeploymentStatus(true)}
+                          disabled={isRefreshingStatus || isDeploying}
+                          className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+                          title="Refresh VPS Status & Releases"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingStatus ? "animate-spin text-indigo-400" : ""}`} />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-3 text-slate-400 font-mono text-[11px] truncate">
+                        <span>Dir: {activeProject.appDir}</span>
+                        <span>&middot;</span>
+                        <span>VPS: {selectedServer?.host}</span>
+                        {deploymentStatus?.currentRelease && (
+                          <>
+                            <span>&middot;</span>
+                            <span className="text-emerald-400">Current: {deploymentStatus.currentRelease}</span>
+                          </>
+                        )}
+                      </div>
                     </div>
 
-                    <button
-                      onClick={handleStartDeploy}
-                      disabled={isDeploying}
-                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition active:scale-95"
-                    >
-                      {isDeploying ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-white" />}
-                      <span>{isDeploying ? "Shipping..." : "Ship to VPS"}</span>
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {isReallyDeployed ? (
+                        <button
+                          onClick={handleStartDeploy}
+                          disabled={isDeploying}
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition active:scale-95"
+                        >
+                          {isDeploying ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <RotateCw className="w-4 h-4" />
+                          )}
+                          <span>{isDeploying ? "Redeploying..." : "Redeploy to VPS"}</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleStartDeploy}
+                          disabled={isDeploying}
+                          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-emerald-600/30 transition active:scale-95"
+                        >
+                          {isDeploying ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Play className="w-4 h-4 fill-white" />
+                          )}
+                          <span>{isDeploying ? "Shipping..." : "Ship to VPS"}</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Step Tracker */}
-                  <div className="grid grid-cols-6 gap-2">
+                  {/* DIRECT IP ACCESS BAR (PORT 80 VIA CADDY) */}
+                  <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                          <Zap className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-mono uppercase text-slate-400 font-bold">
+                              Direct IP Access (Port 80 via Caddy)
+                            </span>
+                            <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-950 text-emerald-400 border border-slate-800">
+                              Instant Access — No DNS Wait
+                            </span>
+                          </div>
+                          <span className="font-mono text-xs text-white font-bold truncate block select-all">
+                            {directIpUrl || "—"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!directIpUrl) return;
+                            try {
+                              await navigator.clipboard.writeText(directIpUrl);
+                              setCopiedIpUrl(true);
+                              addToast("info", "Copied", `Copied ${directIpUrl}`);
+                              setTimeout(() => setCopiedIpUrl(false), 2000);
+                            } catch {
+                              //
+                            }
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium flex items-center gap-1 transition"
+                        >
+                          {copiedIpUrl ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedIpUrl ? "Copied" : "Copy IP URL"}</span>
+                        </button>
+
+                        {directIpUrl && (
+                          <a
+                            href={directIpUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold flex items-center gap-1 transition shadow-sm"
+                          >
+                            <span>Open IP URL</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Chrome HTTPS-First explanation */}
+                    <div className="text-[10px] font-mono text-slate-400 bg-slate-950/60 p-2 rounded-lg border border-slate-800/60 flex items-center justify-between">
+                      <span>💡 <strong>Tip for Chrome</strong>: Typing bare IPs causes Chrome to try <code className="text-rose-300">https://</code> and fail. Use explicit <code className="text-emerald-300">http://</code> or click <strong>Open IP URL</strong> above.</span>
+                    </div>
+                  </div>
+
+                  {/* 6 STAGES PIPELINE: ALL-GREEN IF REALLY DEPLOYED */}
+                  <div className="grid grid-cols-6 gap-2 shrink-0">
                     {[
                       { key: "preflight", label: "1. Preflight" },
                       { key: "build", label: "2. Local Build" },
@@ -678,58 +950,195 @@ export default function App() {
                       { key: "activate", label: "5. Activation" },
                       { key: "verify", label: "6. Verification" },
                     ].map((st) => {
-                      const status = steps[st.key];
+                      const isStepSuccess = isReallyDeployed && !isDeploying ? true : steps[st.key] === "success";
+                      const isStepRunning = isDeploying && steps[st.key] === "running";
+                      const isStepFailed = isDeploying && steps[st.key] === "failed";
+
                       return (
                         <div
                           key={st.key}
-                          className={`p-2.5 rounded-xl border flex items-center justify-between gap-1 ${
-                            status === "success"
-                              ? "bg-emerald-950/20 border-emerald-500/40 text-emerald-300"
-                              : status === "running"
+                          className={`p-2.5 rounded-xl border flex items-center justify-between gap-1 transition ${
+                            isStepSuccess
+                              ? "bg-emerald-950/30 border-emerald-500/50 text-emerald-300"
+                              : isStepRunning
                               ? "bg-indigo-950/40 border-indigo-500 text-indigo-300 animate-pulse"
-                              : status === "failed"
+                              : isStepFailed
                               ? "bg-rose-950/20 border-rose-500/40 text-rose-300"
                               : "bg-slate-900/60 border-slate-800 text-slate-500"
                           }`}
                         >
                           <span className="font-semibold text-[10px] truncate">{st.label}</span>
-                          {status === "success" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
-                          {status === "failed" && <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
-                          {status === "running" && <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />}
+                          {isStepSuccess && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                          {isStepFailed && <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
+                          {isStepRunning && <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />}
                         </div>
                       );
                     })}
                   </div>
 
-                  {/* Terminal Feed */}
-                  <div className="flex-1 bg-black border border-slate-800 rounded-2xl p-4 font-mono text-[11px] overflow-y-auto space-y-1">
-                    <div className="text-slate-600 border-b border-slate-900 pb-2 mb-2 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span>[SKIFF PIPELINE TERMINAL]</span>
-                        <span className="text-emerald-500 text-[10px]">REAL-TIME LOGS</span>
+                  {/* TWO-COLUMN LAYOUT: RELEASES LIST (LEFT) & DOMAIN/LOGS (RIGHT) */}
+                  <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-3.5 overflow-hidden min-h-0">
+                    {/* LEFT COLUMN: RELEASES COLUMN LIST WITH DELETE BUTTON */}
+                    <div className="md:col-span-5 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col overflow-hidden">
+                      <div className="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
+                        <div className="flex items-center gap-2">
+                          <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                          <h3 className="text-xs font-bold text-white">Releases on VPS</h3>
+                          <span className="text-[10px] font-mono text-slate-400 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
+                            {releasesList.length}
+                          </span>
+                        </div>
+                        <button
+                          onClick={loadReleasesList}
+                          disabled={loadingReleases}
+                          className="p-1 rounded text-slate-400 hover:text-white"
+                          title="Refresh Releases"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${loadingReleases ? "animate-spin text-indigo-400" : ""}`} />
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(deployLogs.join("\n"));
-                            addToast("info", "Copied", "Pipeline logs copied to clipboard");
-                          } catch {
-                            addToast("warning", "Copy Failed", "Clipboard unavailable in this context");
-                          }
-                        }}
-                        className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 flex items-center gap-1.5 transition text-[11px]"
-                      >
-                        <Copy className="w-3 h-3 text-indigo-400" />
-                        <span>Copy All Logs</span>
-                      </button>
+
+                      <div className="flex-1 overflow-y-auto space-y-2 py-3">
+                        {releasesList.map((rel) => {
+                          const isBusy = deletingReleaseId === rel.ID || activatingReleaseId === rel.ID;
+                          return (
+                            <div
+                              key={rel.ID}
+                              className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition ${
+                                rel.isCurrent
+                                  ? "bg-emerald-950/20 border-emerald-500/60 ring-1 ring-emerald-500/30"
+                                  : "bg-slate-950/60 border-slate-800 hover:border-slate-700"
+                              }`}
+                            >
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-mono text-xs font-bold text-white truncate">
+                                    {rel.ID}
+                                  </span>
+                                  {rel.isCurrent && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-700/60 font-bold shrink-0">
+                                      CURRENT
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400">
+                                  <span>{rel.size}</span>
+                                  <span>&middot;</span>
+                                  <span className="truncate">{rel.createdAt || "Synced"}</span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                {!rel.isCurrent && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() => handleActivateRelease(rel)}
+                                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-[10px] font-medium flex items-center gap-1 transition"
+                                      title="Switch to this release"
+                                    >
+                                      <ArrowLeftRight className="w-2.5 h-2.5" />
+                                      <span>Rollback</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() => handleDeleteReleasePrompt(rel)}
+                                      className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 transition"
+                                      title="Delete Release"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {releasesList.length === 0 && !loadingReleases && (
+                          <div className="p-6 text-center text-slate-500 text-[11px] font-mono">
+                            No release directories created yet.
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-800 text-[10px] font-mono text-slate-500 flex justify-between shrink-0">
+                        <span>Retention: keep last {activeProject.keepReleases || 3}</span>
+                        <span>Atomic symlink current/</span>
+                      </div>
                     </div>
-                    {deployLogs.map((log, i) => (
-                      <div key={i} className="text-slate-300 whitespace-pre-wrap leading-relaxed select-text">
-                        {log}
+
+                    {/* RIGHT COLUMN: DOMAIN MANAGEMENT & LOGS TABS */}
+                    <div className="md:col-span-7 flex flex-col overflow-hidden space-y-2">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 shrink-0">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => setDeployCockpitTab("domain")}
+                            className={`px-3 py-1 rounded-lg font-semibold text-xs flex items-center gap-1.5 transition ${
+                              deployCockpitTab === "domain"
+                                ? "bg-indigo-600 text-white"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            <Globe className="w-3 h-3" />
+                            <span>Domain &amp; SSL Routing</span>
+                          </button>
+                          <button
+                            onClick={() => setDeployCockpitTab("terminal")}
+                            className={`px-3 py-1 rounded-lg font-semibold text-xs flex items-center gap-1.5 transition ${
+                              deployCockpitTab === "terminal"
+                                ? "bg-indigo-600 text-white"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            <Terminal className="w-3 h-3" />
+                            <span>Live Pipeline Logs</span>
+                          </button>
+                        </div>
                       </div>
-                    ))}
-                    <div ref={logBottomRef} />
+
+                      {deployCockpitTab === "domain" && (
+                        <div className="flex-1 overflow-y-auto">
+                          <DeployDomainSection
+                            server={selectedServer}
+                            project={activeProject}
+                            appName={activeAppSlug}
+                            onProjectUpdated={(up) => setActiveProject(up)}
+                            addToast={addToast}
+                          />
+                        </div>
+                      )}
+
+                      {deployCockpitTab === "terminal" && (
+                        <div className="flex-1 bg-black border border-slate-800 rounded-2xl p-3.5 font-mono text-[11px] overflow-y-auto space-y-1">
+                          <div className="text-slate-600 border-b border-slate-900 pb-2 mb-2 flex items-center justify-between">
+                            <span className="text-emerald-500 text-[10px]">[PIPELINE STREAM]</span>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(deployLogs.join("\n"));
+                                  addToast("info", "Copied", "Pipeline logs copied to clipboard");
+                                } catch {
+                                  //
+                                }
+                              }}
+                              className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 text-[10px] flex items-center gap-1 transition"
+                            >
+                              <Copy className="w-3 h-3" /> Copy Logs
+                            </button>
+                          </div>
+                          {deployLogs.map((log, i) => (
+                            <div key={i} className="text-slate-300 whitespace-pre-wrap leading-relaxed select-text">
+                              {log}
+                            </div>
+                          ))}
+                          <div ref={logBottomRef} />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </>
               ) : (
@@ -766,7 +1175,7 @@ export default function App() {
         )}
       </main>
 
-      {/* SERVER CONFIG MODAL */}
+      {/* MODALS */}
       {showServerModal && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
           <form onSubmit={handleSaveServer} className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
@@ -868,7 +1277,6 @@ export default function App() {
         </div>
       )}
 
-      {/* PROJECT RECIPE MODAL */}
       <ProjectModal
         isOpen={showProjectModal}
         onClose={() => setShowProjectModal(false)}
@@ -878,7 +1286,6 @@ export default function App() {
         selectedServerId={selectedServer?.id}
       />
 
-      {/* TELEMETRY / VPS HEALTH MODAL */}
       <TelemetryModal
         isOpen={showTelemetryModal}
         onClose={() => setShowTelemetryModal(false)}
@@ -886,7 +1293,6 @@ export default function App() {
         telemetry={telemetry}
       />
 
-      {/* CUSTOM CONFIRMATION MODAL */}
       <ConfirmModal
         isOpen={confirmState.isOpen}
         onClose={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
@@ -898,7 +1304,6 @@ export default function App() {
         isLoading={confirmState.isLoading}
       />
 
-      {/* REAL-TIME BOOTSTRAP TERMINAL MODAL */}
       <BootstrapModal
         isOpen={bootstrapState.isOpen}
         onClose={() => setBootstrapState((prev) => ({ ...prev, isOpen: false }))}
@@ -909,7 +1314,6 @@ export default function App() {
         onCancel={handleCancelBootstrap}
       />
 
-      {/* DATABASE CONNECTION MANAGER MODAL */}
       <DatabaseManageModal
         isOpen={dbModal.isOpen}
         onClose={() => setDbModal((prev) => ({ ...prev, isOpen: false }))}
@@ -918,7 +1322,6 @@ export default function App() {
         addToast={addToast}
       />
 
-      {/* FULL VPS RESET MODAL */}
       <ResetVPSModal
         isOpen={resetState.isOpen}
         onClose={() => setResetState((prev) => ({ ...prev, isOpen: false }))}
@@ -928,7 +1331,6 @@ export default function App() {
         onConfirmReset={handleConfirmReset}
       />
 
-      {/* TOAST SYSTEM */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

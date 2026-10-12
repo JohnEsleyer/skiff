@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Cpu,
   Database,
+  ExternalLink,
   Globe,
   HardDrive,
   Layers,
@@ -14,11 +15,8 @@ import {
 } from "lucide-react";
 
 const DB_SERVICE_TYPES = ["surrealdb", "postgres", "postgresql", "mysql", "mariadb"];
-
-// Strips the " (App)" display suffix back to the real systemd unit name.
 const rawServiceName = (displayName) => displayName.replace(/ \(App\)$/, "");
 
-// Maps systemd unit names to skiff database types for info.json lookup.
 const toDbType = (serviceName) => {
   const raw = rawServiceName(serviceName).toLowerCase();
   if (raw === "postgresql") return "postgres";
@@ -34,6 +32,7 @@ export default function ServerManageView({
   server,
   onBack,
   onOpenDeployments,
+  onSelectAppForDeployments,
   onOpenBootstrap,
   onOpenDatabaseModal,
   onOpenResetModal,
@@ -82,10 +81,10 @@ export default function ServerManageView({
   const ramTotal = tele?.totalRamMb || 1;
   const ramPercent = tele?.ramPercent || ((ramUsed / ramTotal) * 100);
 
-  // Only services that actually exist on the VPS are reported by the probe.
   const servicesList = overview?.services || [];
   const databaseServices = servicesList.filter((s) => isDatabaseService(s.name));
   const generalServices = servicesList.filter((s) => !isDatabaseService(s.name));
+  const appDetails = overview?.appDetails || [];
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto p-6 space-y-6 max-w-5xl mx-auto w-full">
@@ -135,7 +134,7 @@ export default function ServerManageView({
             className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm active:scale-95 transition"
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>Deployments View &rarr;</span>
+            <span>Deployments Cockpit &rarr;</span>
           </button>
         </div>
       </div>
@@ -189,7 +188,130 @@ export default function ServerManageView({
         </div>
       </div>
 
-      {/* Installed Database Services (only units present on the VPS) */}
+      {/* PROMINENT HERO: Deployed Applications on this VPS */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Deployed Applications on this VPS</span>
+            </h3>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 font-semibold">
+              {appDetails.length} active
+            </span>
+          </div>
+          <button
+            onClick={onOpenDeployments}
+            className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1 transition"
+          >
+            <span>+ Ship Another Project</span>
+          </button>
+        </div>
+
+        {loading && !overview ? (
+          <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-slate-500 text-xs text-center animate-pulse">
+            Inspecting `/opt/skiff/apps` on the VPS...
+          </div>
+        ) : appDetails.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {appDetails.map((app) => {
+              const busy = actionInProgress === `${app.name}-restart`;
+              const isServiceActive = app.serviceStatus === "active";
+              return (
+                <div
+                  key={app.name}
+                  className="p-4 rounded-2xl bg-slate-900 border border-slate-800 hover:border-slate-700 transition space-y-3 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-bold text-white font-mono">{app.name}</h4>
+                        <span
+                          className={`text-[9px] font-mono uppercase px-2 py-0.5 rounded-full font-bold border ${
+                            isServiceActive
+                              ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/60"
+                              : "bg-slate-800 text-slate-400 border-slate-700"
+                          }`}
+                        >
+                          {app.serviceStatus}
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-500 block mt-0.5">
+                        {app.path}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => handleControlService(app.name, "restart")}
+                        disabled={busy}
+                        className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-lg text-xs transition"
+                        title="Restart App Service"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin text-indigo-400" : ""}`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Metadata: active release + domain */}
+                  <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 grid grid-cols-2 gap-2 text-[11px] font-mono">
+                    <div>
+                      <span className="text-slate-500 text-[9px] uppercase block">Active Release</span>
+                      <span className="text-indigo-300 font-semibold truncate block">
+                        {app.currentRelease || "Linked"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 text-[9px] uppercase block">Releases Stored</span>
+                      <span className="text-slate-300 block">{app.releasesCount} releases</span>
+                    </div>
+                    <div className="col-span-2 pt-1 border-t border-slate-900 flex items-center justify-between">
+                      <span className="text-slate-500 text-[9px] uppercase">Domain / SSL:</span>
+                      {app.domain ? (
+                        <a
+                          href={`https://${app.domain}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-emerald-400 hover:underline flex items-center gap-1 text-[11px]"
+                        >
+                          <span>{app.domain}</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      ) : (
+                        <span className="text-slate-500 text-[10px]">None attached</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      onClick={() => onSelectAppForDeployments(app.name)}
+                      className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 shadow-sm"
+                    >
+                      <span>Manage &amp; Domain Routing &rarr;</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="p-8 rounded-2xl border border-dashed border-slate-800 text-center space-y-3 bg-slate-950/40">
+            <p className="text-xs text-slate-400">
+              No applications deployed to <code className="text-indigo-300 font-mono">/opt/skiff/apps</code> on this VPS yet.
+            </p>
+            <button
+              onClick={onOpenDeployments}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Ship First Application</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Installed Database Services */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-mono uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-2">
@@ -200,15 +322,11 @@ export default function ServerManageView({
             onClick={onOpenBootstrap}
             className="text-[11px] text-indigo-400 hover:text-indigo-300 font-mono flex items-center gap-1 hover:underline"
           >
-            <Plus className="w-3 h-3" /> Add / Provision Another Stack
+            <Plus className="w-3 h-3" /> Provision Another Database
           </button>
         </div>
 
-        {loading && !overview ? (
-          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 text-slate-500 text-xs text-center animate-pulse">
-            Querying VPS services over SSH...
-          </div>
-        ) : databaseServices.length > 0 ? (
+        {databaseServices.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {databaseServices.map((svc) => {
               const busy = actionInProgress === `${rawServiceName(svc.name)}-restart`;
@@ -248,7 +366,7 @@ export default function ServerManageView({
                       onClick={() => onOpenDatabaseModal(toDbType(svc.name))}
                       className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-semibold flex items-center gap-1.5 shadow-sm transition active:scale-95"
                     >
-                      <span>Manage &amp; Connect</span>
+                      <span>Credentials &amp; Backup</span>
                     </button>
                     <button
                       onClick={() => handleControlService(svc.name, "restart")}
@@ -265,16 +383,16 @@ export default function ServerManageView({
           </div>
         ) : (
           <div className="p-4 rounded-xl border border-dashed border-slate-800 text-center text-slate-500 text-xs">
-            No database service installed on this VPS yet. Click &quot;Add / Provision Another Stack&quot; above to configure one.
+            No database service installed on this VPS yet. Click &quot;Provision Another Database&quot; above to add one.
           </div>
         )}
       </div>
 
-      {/* Infrastructure & App Services */}
+      {/* Infrastructure & Proxy Services */}
       <div className="space-y-3">
         <h3 className="text-xs font-mono uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-2">
           <Globe className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Infrastructure &amp; App Services ({generalServices.length})</span>
+          <span>Infrastructure Services ({generalServices.length})</span>
         </h3>
 
         {generalServices.length > 0 ? (
@@ -327,35 +445,6 @@ export default function ServerManageView({
             </div>
           )
         )}
-      </div>
-
-      {/* Deployed Apps on this VPS */}
-      <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-mono uppercase tracking-wider text-slate-400 font-semibold">
-            Applications Present in /opt/skiff/apps
-          </h3>
-          <span className="text-[10px] font-mono text-indigo-400">
-            {overview?.deployedApps?.length || 0} active deployments
-          </span>
-        </div>
-
-        <div className="grid grid-cols-3 gap-2">
-          {(overview?.deployedApps || []).map((app) => (
-            <div
-              key={app}
-              className="p-3 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs text-white flex items-center gap-2"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span className="truncate">{app}</span>
-            </div>
-          ))}
-          {(!overview?.deployedApps || overview.deployedApps.length === 0) && !loading && (
-            <div className="col-span-3 text-slate-500 text-xs py-4 text-center">
-              No apps deployed on this VPS yet. Click &quot;Deployments View&quot; to ship your first project.
-            </div>
-          )}
-        </div>
       </div>
 
       {/* Danger Zone: Full VPS Reset to Zero */}

@@ -31,6 +31,30 @@ export namespace bootstrap {
 
 export namespace main {
 	
+	export class DNSCheckResult {
+	    domain: string;
+	    serverIp: string;
+	    resolvedIps: string[];
+	    isPointing: boolean;
+	    isCloudflare: boolean;
+	    recordType: string;
+	    recordHost: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DNSCheckResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.domain = source["domain"];
+	        this.serverIp = source["serverIp"];
+	        this.resolvedIps = source["resolvedIps"];
+	        this.isPointing = source["isPointing"];
+	        this.isCloudflare = source["isCloudflare"];
+	        this.recordType = source["recordType"];
+	        this.recordHost = source["recordHost"];
+	    }
+	}
 	export class DatabaseInfo {
 	    engine: string;
 	    version?: string;
@@ -67,6 +91,86 @@ export namespace main {
 	        this.active = source["active"];
 	    }
 	}
+	export class DeployedAppDetail {
+	    name: string;
+	    path: string;
+	    currentRelease?: string;
+	    releasesCount: number;
+	    serviceStatus: string;
+	    domain?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeployedAppDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.currentRelease = source["currentRelease"];
+	        this.releasesCount = source["releasesCount"];
+	        this.serviceStatus = source["serviceStatus"];
+	        this.domain = source["domain"];
+	    }
+	}
+	export class DomainRouteConfig {
+	    appName: string;
+	    domain: string;
+	    targetPort: number;
+	    tlsMode: string;
+	    active: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DomainRouteConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.appName = source["appName"];
+	        this.domain = source["domain"];
+	        this.targetPort = source["targetPort"];
+	        this.tlsMode = source["tlsMode"];
+	        this.active = source["active"];
+	    }
+	}
+	export class ProjectDeploymentStatus {
+	    isDeployed: boolean;
+	    currentRelease: string;
+	    releasesCount: number;
+	    serviceActive: boolean;
+	    serviceStatus: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProjectDeploymentStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.isDeployed = source["isDeployed"];
+	        this.currentRelease = source["currentRelease"];
+	        this.releasesCount = source["releasesCount"];
+	        this.serviceActive = source["serviceActive"];
+	        this.serviceStatus = source["serviceStatus"];
+	    }
+	}
+	export class ReleaseInfo {
+	    id: string;
+	    isCurrent: boolean;
+	    size: string;
+	    createdAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReleaseInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.isCurrent = source["isCurrent"];
+	        this.size = source["size"];
+	        this.createdAt = source["createdAt"];
+	    }
+	}
 	export class ServiceStatus {
 	    name: string;
 	    active: boolean;
@@ -91,6 +195,7 @@ export namespace main {
 	    telemetry?: sshclient.Telemetry;
 	    services: ServiceStatus[];
 	    deployedApps: string[];
+	    appDetails: DeployedAppDetail[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ServerOverview(source);
@@ -101,6 +206,7 @@ export namespace main {
 	        this.telemetry = this.convertValues(source["telemetry"], sshclient.Telemetry);
 	        this.services = this.convertValues(source["services"], ServiceStatus);
 	        this.deployedApps = source["deployedApps"];
+	        this.appDetails = this.convertValues(source["appDetails"], DeployedAppDetail);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -189,6 +295,9 @@ export namespace store {
 	    localPath: string;
 	    serverId: string;
 	    appDir: string;
+	    domain?: string;
+	    targetPort?: number;
+	    tlsMode?: string;
 	    buildSteps: BuildStep[];
 	    artifacts: ArtifactRule[];
 	    sharedFiles: string[];
@@ -208,6 +317,9 @@ export namespace store {
 	        this.localPath = source["localPath"];
 	        this.serverId = source["serverId"];
 	        this.appDir = source["appDir"];
+	        this.domain = source["domain"];
+	        this.targetPort = source["targetPort"];
+	        this.tlsMode = source["tlsMode"];
 	        this.buildSteps = this.convertValues(source["buildSteps"], BuildStep);
 	        this.artifacts = this.convertValues(source["artifacts"], ArtifactRule);
 	        this.sharedFiles = source["sharedFiles"];

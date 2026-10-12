@@ -8,6 +8,9 @@ const blankForm = (serverId) => ({
   localPath: "",
   serverId: serverId || "",
   appDir: "/opt/skiff/apps/my-app",
+  domain: "",
+  targetPort: 8080,
+  tlsMode: "auto",
   buildSteps: [{ name: "Vite Client", command: "npm run build" }],
   artifacts: [{ local: "dist", remote: "public" }],
   remoteSetupSteps: [],
@@ -19,6 +22,9 @@ const blankForm = (serverId) => ({
 
 const normalize = (p) => ({
   ...p,
+  domain: p.domain || "",
+  targetPort: p.targetPort || 8080,
+  tlsMode: p.tlsMode || "auto",
   buildSteps: p.buildSteps?.length ? p.buildSteps : [{ name: "Build App", command: "npm run build" }],
   artifacts: p.artifacts?.length ? p.artifacts : [{ local: "dist", remote: "public" }],
   remoteSetupSteps: p.remoteSetupSteps || [],
@@ -305,6 +311,49 @@ export default function ProjectModal({
                   </button>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* Domain & SSL Configuration (synced to Caddy on deploy) */}
+          <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+            <label className="text-[10px] font-mono uppercase text-indigo-400 block font-semibold">
+              Domain &amp; SSL Configuration
+            </label>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <label className="text-[10px] font-mono text-slate-500 block mb-1">Domain Name (Optional)</label>
+                <input
+                  placeholder="e.g. notes.mydomain.com"
+                  value={formData.domain || ""}
+                  onChange={(e) => setFormData({ ...formData, domain: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-mono text-slate-500 block mb-1">Backend Port</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  placeholder="8080"
+                  value={formData.targetPort || 8080}
+                  onChange={(e) => setFormData({ ...formData, targetPort: Number(e.target.value) })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-mono text-slate-500 block mb-1">TLS / SSL Mode</label>
+              <CustomSelect
+                value={formData.tlsMode || "auto"}
+                onChange={(val) => setFormData({ ...formData, tlsMode: val })}
+                options={[
+                  { value: "auto", label: "Automatic Let's Encrypt SSL (Production)" },
+                  { value: "http", label: "Fast Prototyping (HTTP Only, No SSL)" },
+                  { value: "none", label: "Raw Port Proxy Only" },
+                ]}
+              />
             </div>
           </div>
 

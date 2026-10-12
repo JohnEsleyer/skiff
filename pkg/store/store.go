@@ -31,21 +31,21 @@ type BuildStep struct {
 }
 
 type ProjectConfig struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	LocalPath   string         `json:"localPath"`
-	ServerID    string         `json:"serverId"`
-	AppDir      string         `json:"appDir"` // e.g. /opt/skiff/apps/esper
-	BuildSteps  []BuildStep    `json:"buildSteps"`
-	Artifacts   []ArtifactRule `json:"artifacts"`
-	SharedFiles []string       `json:"sharedFiles"` // e.g. [".env", "uploads", "data"]
-	// RemoteSetupSteps run on the VPS inside the new release dir after transfer,
-	// e.g. [{name:"DB Setup", command:"bash setup.sh"}]. DB credentials and
-	// release paths are injected as environment variables (see deployer).
-	RemoteSetupSteps []BuildStep `json:"remoteSetupSteps,omitempty"`
-	RestartCommand   string      `json:"restartCommand"`
-	HealthURL        string      `json:"healthUrl"`
-	KeepReleases     int         `json:"keepReleases"`
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	LocalPath        string         `json:"localPath"`
+	ServerID         string         `json:"serverId"`
+	AppDir           string         `json:"appDir"` // e.g. /opt/skiff/apps/esper
+	Domain           string         `json:"domain,omitempty"`
+	TargetPort       int            `json:"targetPort,omitempty"`
+	TLSMode          string         `json:"tlsMode,omitempty"`
+	BuildSteps       []BuildStep    `json:"buildSteps"`
+	Artifacts        []ArtifactRule `json:"artifacts"`
+	SharedFiles      []string       `json:"sharedFiles"`
+	RemoteSetupSteps []BuildStep    `json:"remoteSetupSteps,omitempty"`
+	RestartCommand   string         `json:"restartCommand"`
+	HealthURL        string         `json:"healthUrl"`
+	KeepReleases     int            `json:"keepReleases"`
 }
 
 type AppData struct {
@@ -150,6 +150,32 @@ func (m *Manager) SaveProject(proj ProjectConfig) error {
 	if !found {
 		m.data.Projects = append(m.data.Projects, proj)
 	}
+	return m.save()
+}
+
+func (m *Manager) DeleteProject(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	filtered := make([]ProjectConfig, 0)
+	for _, p := range m.data.Projects {
+		if p.ID != id {
+			filtered = append(filtered, p)
+		}
+	}
+	m.data.Projects = filtered
+	return m.save()
+}
+
+func (m *Manager) DeleteProjectsByServer(serverID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	filtered := make([]ProjectConfig, 0)
+	for _, p := range m.data.Projects {
+		if p.ServerID != serverID {
+			filtered = append(filtered, p)
+		}
+	}
+	m.data.Projects = filtered
 	return m.save()
 }
 

@@ -5,6 +5,8 @@ import {main} from '../models';
 import {store} from '../models';
 import {sshclient} from '../models';
 
+export function ActivateAppRelease(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
 export function BackupAndDownloadDatabase(arg1:string,arg2:string):Promise<string>;
 
 export function BootstrapVPS(arg1:string):Promise<void>;
@@ -13,13 +15,29 @@ export function BootstrapVPSWithStack(arg1:string,arg2:bootstrap.StackConfig):Pr
 
 export function CancelBootstrap():Promise<void>;
 
+export function CheckDomainDNS(arg1:string,arg2:string):Promise<main.DNSCheckResult>;
+
+export function ConfigureAppDomain(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<void>;
+
 export function ControlServerService(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function DeleteAppRelease(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function DeleteProject(arg1:string):Promise<void>;
+
+export function DeleteProjectDeployment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function DeleteServer(arg1:string):Promise<void>;
 
 export function DeployProject(arg1:string):Promise<void>;
 
+export function GetAppDomainConfig(arg1:string,arg2:string):Promise<main.DomainRouteConfig>;
+
+export function GetAppReleases(arg1:string,arg2:string):Promise<Array<main.ReleaseInfo>>;
+
 export function GetDatabaseInfo(arg1:string,arg2:string):Promise<main.DatabaseInfo>;
+
+export function GetProjectDeploymentStatus(arg1:string,arg2:string,arg3:string):Promise<main.ProjectDeploymentStatus>;
 
 export function GetProjects():Promise<Array<store.ProjectConfig>>;
 
@@ -28,6 +46,8 @@ export function GetServerOverview(arg1:string):Promise<main.ServerOverview>;
 export function GetServers():Promise<Array<store.ServerConfig>>;
 
 export function ReadSkiffConfigFromPath(arg1:string):Promise<store.ProjectConfig>;
+
+export function RemoveAppDomain(arg1:string,arg2:string):Promise<void>;
 
 export function ResetVPS(arg1:string):Promise<void>;
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,22 +21,46 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// versionRegexp extracts the first version-like token (e.g. 2.2.1, 16.4)
-// from `<binary> --version` output.
 var versionRegexp = regexp.MustCompile(`[0-9]+\.[0-9]+(\.[0-9]+)?`)
+var releaseIDRegexp = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 type ServiceStatus struct {
 	Name    string `json:"name"`
 	Active  bool   `json:"active"`
 	Running bool   `json:"running"`
-	Status  string `json:"status"` // e.g. "active", "inactive"
+	Status  string `json:"status"`
 	Version string `json:"version,omitempty"`
+}
+
+type DeployedAppDetail struct {
+	Name           string `json:"name"`
+	Path           string `json:"path"`
+	CurrentRelease string `json:"currentRelease,omitempty"`
+	ReleasesCount  int    `json:"releasesCount"`
+	ServiceStatus  string `json:"serviceStatus"`
+	Domain         string `json:"domain,omitempty"`
 }
 
 type ServerOverview struct {
 	Telemetry    *sshclient.Telemetry `json:"telemetry"`
 	Services     []ServiceStatus      `json:"services"`
 	DeployedApps []string             `json:"deployedApps"`
+	AppDetails   []DeployedAppDetail  `json:"appDetails"`
+}
+
+type ProjectDeploymentStatus struct {
+	IsDeployed     bool   `json:"isDeployed"`
+	CurrentRelease string `json:"currentRelease"`
+	ReleasesCount  int    `json:"releasesCount"`
+	ServiceActive  bool   `json:"serviceActive"`
+	ServiceStatus  string `json:"serviceStatus"`
+}
+
+type ReleaseInfo struct {
+	ID        string `json:"id"`
+	IsCurrent bool   `json:"isCurrent"`
+	Size      string `json:"size"`
+	CreatedAt string `json:"createdAt"`
 }
 
 type App struct {
@@ -58,7 +84,6 @@ func (a *App) startup(ctx context.Context) {
 
 // ----------------- Native OS Dialogs & Config Discovery -----------------
 
-// SelectFolderDialog opens the native OS directory chooser.
 func (a *App) SelectFolderDialog() (string, error) {
 	selectedDir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select Project Directory",
@@ -69,8 +94,6 @@ func (a *App) SelectFolderDialog() (string, error) {
 	return selectedDir, nil
 }
 
-// ReadSkiffConfigFromPath checks for skiff.json (or .skiff.json) in the
-// folder and parses it into a ProjectConfig.
 func (a *App) ReadSkiffConfigFromPath(folderPath string) (*store.ProjectConfig, error) {
 	if folderPath == "" {
 		return nil, fmt.Errorf("empty folder path")
@@ -103,15 +126,12 @@ func (a *App) ReadSkiffConfigFromPath(folderPath string) (*store.ProjectConfig, 
 		return nil, fmt.Errorf("malformed skiff.json: %w", err)
 	}
 
-	// The opened folder is authoritative for the local path.
 	cfg.LocalPath = folderPath
 	return &cfg, nil
 }
 
 // ----------------- VPS Management & Telemetry -----------------
 
-// GetServerOverview returns telemetry, core service states, and the list of
-// deployed apps under /opt/skiff/apps in a single SSH session.
 func (a *App) GetServerOverview(serverID string) (*ServerOverview, error) {
 	srv, err := a.store.GetServer(serverID)
 	if err != nil {
@@ -129,15 +149,10 @@ func (a *App) GetServerOverview(serverID string) (*ServerOverview, error) {
 		return nil, err
 	}
 
-	// Only report services whose systemd unit actually exists on the host.
-	// `systemctl is-active` alone cannot distinguish "installed but stopped"
-	// from "never installed" (both are non-active), so gate on `systemctl cat`
-	// succeeding. Also discover per-app services matching /opt/skiff/apps/*.
-	// Live binary versions are captured for the management UI.
 	checkServicesCmd := `sh -c '
 CANDIDATES="caddy surrealdb postgresql mariadb mysql"
 for s in $CANDIDATES; do
-  if systemctl cat "$s.service" 2>/dev/null || [ -d "/opt/skiff/data/$s" ]; then
+  if systemctl cat "$s.service" >/dev/null 2>&1 || [ -d "/opt/skiff/data/$s" ]; then
     STATUS=$(systemctl is-active "$s" 2>/dev/null || echo "stopped")
     VERSION=""
     case "$s" in
@@ -161,10 +176,23 @@ if [ -d /opt/skiff/apps ]; then
   for app in /opt/skiff/apps/*; do
     if [ -d "$app" ]; then
       APP_NAME=$(basename "$app")
-      if systemctl cat "$APP_NAME.service" 2>/dev/null; then
+      if systemctl cat "$APP_NAME.service" >/dev/null 2>&1; then
         STATUS=$(systemctl is-active "$APP_NAME" 2>/dev/null || echo "stopped")
         echo "appservice:$APP_NAME:$STATUS:"
       fi
+      CURR=$(readlink "$app/current" 2>/dev/null | xargs basename 2>/dev/null || echo "")
+      COUNT=$(ls -1 "$app/releases" 2>/dev/null | wc -l || echo "0")
+      SVC_STATUS="not-installed"
+      if systemctl cat "$APP_NAME.service" >/dev/null 2>&1; then
+        SVC_STATUS=$(systemctl is-active "$APP_NAME" 2>/dev/null || echo "stopped")
+      fi
+      # Extract non-IP custom domain cleanly (F7 fix)
+      SNIP_FILE="/opt/skiff/caddy/conf.d/$APP_NAME.caddy"
+      DOMAIN=""
+      if [ -f "$SNIP_FILE" ]; then
+        DOMAIN=$(grep -hoE "[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}" "$SNIP_FILE" 2>/dev/null | grep -vE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -n 1 || echo "")
+      fi
+      echo "appdetail:$APP_NAME:$CURR:$COUNT:$SVC_STATUS:$DOMAIN"
     fi
   done
 fi
@@ -175,14 +203,41 @@ ls -1 /opt/skiff/apps 2>/dev/null || true
 
 	services := make([]ServiceStatus, 0)
 	deployedApps := make([]string, 0)
+	appDetails := make([]DeployedAppDetail, 0)
 
 	parts := strings.Split(out, "---")
 	if len(parts) >= 1 {
 		for _, l := range strings.Split(strings.TrimSpace(parts[0]), "\n") {
-			if strings.TrimSpace(l) == "" {
+			line := strings.TrimSpace(l)
+			if line == "" {
 				continue
 			}
-			fields := strings.SplitN(strings.TrimSpace(l), ":", 4)
+
+			if strings.HasPrefix(line, "appdetail:") {
+				f := strings.SplitN(strings.TrimPrefix(line, "appdetail:"), ":", 5)
+				if len(f) >= 4 {
+					appName := f[0]
+					curr := f[1]
+					count := 0
+					fmt.Sscanf(f[2], "%d", &count)
+					svcSt := f[3]
+					dom := ""
+					if len(f) >= 5 {
+						dom = f[4]
+					}
+					appDetails = append(appDetails, DeployedAppDetail{
+						Name:           appName,
+						Path:           fmt.Sprintf("/opt/skiff/apps/%s", appName),
+						CurrentRelease: curr,
+						ReleasesCount:  count,
+						ServiceStatus:  svcSt,
+						Domain:         dom,
+					})
+				}
+				continue
+			}
+
+			fields := strings.SplitN(line, ":", 4)
 			if len(fields) < 3 {
 				continue
 			}
@@ -195,9 +250,6 @@ ls -1 /opt/skiff/apps 2>/dev/null || true
 				continue
 			}
 			isActive := st == "active"
-
-			// App daemons are labeled so the UI can strip the suffix
-			// before issuing systemctl commands.
 			displayName := name
 			if kind == "appservice" {
 				displayName = fmt.Sprintf("%s (App)", name)
@@ -225,10 +277,10 @@ ls -1 /opt/skiff/apps 2>/dev/null || true
 		Telemetry:    tele,
 		Services:     services,
 		DeployedApps: deployedApps,
+		AppDetails:   appDetails,
 	}, nil
 }
 
-// ControlServerService runs `sudo systemctl <action> <service>` on the VPS.
 func (a *App) ControlServerService(serverID, serviceName, action string) error {
 	srv, err := a.store.GetServer(serverID)
 	if err != nil {
@@ -243,12 +295,499 @@ func (a *App) ControlServerService(serverID, serviceName, action string) error {
 
 	switch action {
 	case "start", "stop", "restart", "reload":
-		// allowed
 	default:
 		return fmt.Errorf("invalid service action: %s", action)
 	}
 
 	cmd := fmt.Sprintf("sudo systemctl %s %s", action, serviceName)
+	_, err = client.RunCommand(cmd)
+	return err
+}
+
+func (a *App) GetProjectDeploymentStatus(serverID, appDir, appName string) (*ProjectDeploymentStatus, error) {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	slug := sanitizeAppName(appName)
+	if appDir != "" {
+		clean := filepath.Clean(appDir)
+		base := filepath.Base(clean)
+		if base != "" && base != "." && base != "/" {
+			slug = sanitizeAppName(base)
+		}
+	}
+
+	probeScript := fmt.Sprintf(`sh -c '
+APP_DIR="%s"
+APP_NAME="%s"
+if [ -d "$APP_DIR/current" ] || [ -d "$APP_DIR/releases" ]; then
+  CURR=$(readlink "$APP_DIR/current" 2>/dev/null | xargs basename 2>/dev/null || echo "")
+  COUNT=$(ls -1 "$APP_DIR/releases" 2>/dev/null | wc -l || echo "0")
+  SVC_ST="inactive"
+  if systemctl cat "$APP_NAME.service" >/dev/null 2>&1; then
+    SVC_ST=$(systemctl is-active "$APP_NAME" 2>/dev/null || echo "stopped")
+  fi
+  echo "DEPLOYED:$CURR:$COUNT:$SVC_ST"
+else
+  echo "NOT_DEPLOYED"
+fi
+'`, appDir, slug)
+
+	out, err := client.RunCommand(probeScript)
+	if err != nil {
+		return &ProjectDeploymentStatus{IsDeployed: false}, nil
+	}
+
+	trimmed := strings.TrimSpace(out)
+	if strings.HasPrefix(trimmed, "DEPLOYED:") {
+		parts := strings.Split(trimmed, ":")
+		rel := ""
+		count := 0
+		svcSt := "inactive"
+		if len(parts) >= 2 {
+			rel = parts[1]
+		}
+		if len(parts) >= 3 {
+			fmt.Sscanf(parts[2], "%d", &count)
+		}
+		if len(parts) >= 4 {
+			svcSt = parts[3]
+		}
+		return &ProjectDeploymentStatus{
+			IsDeployed:     true,
+			CurrentRelease: rel,
+			ReleasesCount:  count,
+			ServiceActive:  svcSt == "active",
+			ServiceStatus:  svcSt,
+		}, nil
+	}
+
+	return &ProjectDeploymentStatus{IsDeployed: false}, nil
+}
+
+// ----------------- Column Releases Management & Deletion -----------------
+
+func (a *App) GetAppReleases(serverID, appDir string) ([]ReleaseInfo, error) {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	cmd := fmt.Sprintf(`sh -c '
+APP_DIR="%s"
+if [ ! -d "$APP_DIR/releases" ]; then
+  exit 0
+fi
+CURR=$(readlink "$APP_DIR/current" 2>/dev/null | xargs basename 2>/dev/null || echo "")
+for r in $(ls -1dt "$APP_DIR/releases"/* 2>/dev/null); do
+  if [ -d "$r" ]; then
+    REL=$(basename "$r")
+    IS_C="0"
+    if [ "$REL" = "$CURR" ]; then IS_C="1"; fi
+    SZ=$(du -sh "$r" 2>/dev/null | awk "{print \$1}" || echo "N/A")
+    DT=$(stat -c "%%y" "$r" 2>/dev/null | cut -d"." -f1 || date -r "$r" "+%%Y-%%m-%%d %%H:%%M:%%S" 2>/dev/null || echo "")
+    echo "rel:$REL:$IS_C:$SZ:$DT"
+  fi
+done
+'`, appDir)
+
+	out, err := client.RunCommand(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	releases := make([]ReleaseInfo, 0)
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		line := strings.TrimSpace(l)
+		if strings.HasPrefix(line, "rel:") {
+			parts := strings.SplitN(strings.TrimPrefix(line, "rel:"), ":", 4)
+			if len(parts) >= 4 {
+				releases = append(releases, ReleaseInfo{
+					ID:        parts[0],
+					IsCurrent: parts[1] == "1",
+					Size:      parts[2],
+					CreatedAt: parts[3],
+				})
+			}
+		}
+	}
+	return releases, nil
+}
+
+func (a *App) DeleteAppRelease(serverID, appDir, releaseID string) error {
+	if !releaseIDRegexp.MatchString(releaseID) {
+		return fmt.Errorf("invalid release identifier")
+	}
+
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	cmd := fmt.Sprintf(`sh -c '
+APP_DIR="%s"
+REL="%s"
+CURR=$(readlink "$APP_DIR/current" 2>/dev/null | xargs basename 2>/dev/null || echo "")
+if [ "$REL" = "$CURR" ]; then
+  echo "CANNOT_DELETE_ACTIVE"
+  exit 1
+fi
+rm -rf "$APP_DIR/releases/$REL"
+echo "DELETED"
+'`, appDir, releaseID)
+
+	out, err := client.RunCommand(cmd)
+	if err != nil || strings.Contains(out, "CANNOT_DELETE_ACTIVE") {
+		return fmt.Errorf("cannot delete the currently active release. Switch releases first")
+	}
+	return nil
+}
+
+func (a *App) ActivateAppRelease(serverID, appDir, releaseID, restartCommand string) error {
+	if !releaseIDRegexp.MatchString(releaseID) {
+		return fmt.Errorf("invalid release identifier")
+	}
+
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	cmd := fmt.Sprintf(`sh -c '
+APP_DIR="%s"
+REL="%s"
+if [ ! -d "$APP_DIR/releases/$REL" ]; then
+  echo "NOT_FOUND"
+  exit 1
+fi
+ln -sfn "$APP_DIR/releases/$REL" "$APP_DIR/current"
+%s
+echo "ACTIVATED"
+'`, appDir, releaseID, restartCommand)
+
+	_, err = client.RunCommand(cmd)
+	return err
+}
+
+// DeleteProjectDeployment stops the app service, removes Caddy routing, wipes remote files, and deletes the recipe.
+func (a *App) DeleteProjectDeployment(serverID, projectID, appDir, appName string) error {
+	srv, err := a.store.GetServer(serverID)
+	if err == nil {
+		client, cerr := sshclient.NewClient(*srv)
+		if cerr == nil {
+			defer client.Close()
+			cleanApp := sanitizeAppName(appName)
+			if appDir != "" {
+				base := filepath.Base(filepath.Clean(appDir))
+				if base != "" && base != "." && base != "/" {
+					cleanApp = sanitizeAppName(base)
+				}
+			}
+
+			cleanupCmd := fmt.Sprintf(`sh -c '
+APP_DIR="%s"
+APP_NAME="%s"
+systemctl stop "$APP_NAME" >/dev/null 2>&1 || true
+systemctl disable "$APP_NAME" >/dev/null 2>&1 || true
+rm -f "/etc/systemd/system/$APP_NAME.service"
+rm -f "/opt/skiff/caddy/conf.d/$APP_NAME.caddy"
+systemctl reload caddy >/dev/null 2>&1 || caddy reload >/dev/null 2>&1 || true
+if [ -n "$APP_DIR" ] && [ "$APP_DIR" != "/" ] && [ "$APP_DIR" != "/opt" ] && [ "$APP_DIR" != "/opt/skiff" ]; then
+  rm -rf "$APP_DIR"
+fi
+systemctl daemon-reload
+'`, appDir, cleanApp)
+			_, _ = client.RunCommand(cleanupCmd)
+		}
+	}
+
+	return a.store.DeleteProject(projectID)
+}
+
+// ----------------- Domain & Caddy Routing -----------------
+
+type DNSCheckResult struct {
+	Domain       string   `json:"domain"`
+	ServerIP     string   `json:"serverIp"`
+	ResolvedIPs  []string `json:"resolvedIps"`
+	IsPointing   bool     `json:"isPointing"`
+	IsCloudflare bool     `json:"isCloudflare"`
+	RecordType   string   `json:"recordType"`
+	RecordHost   string   `json:"recordHost"`
+}
+
+type DomainRouteConfig struct {
+	AppName    string `json:"appName"`
+	Domain     string `json:"domain"`
+	TargetPort int    `json:"targetPort"`
+	TLSMode    string `json:"tlsMode"`
+	Active     bool   `json:"active"`
+}
+
+var domainLabelRegexp = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$`)
+
+func sanitizeDomain(raw string) (string, error) {
+	d := strings.TrimSpace(strings.ToLower(raw))
+	d = strings.TrimPrefix(d, "http://")
+	d = strings.TrimPrefix(d, "https://")
+	d = strings.TrimRight(d, "/")
+	if d == "" || len(d) > 253 {
+		return "", fmt.Errorf("empty domain name")
+	}
+	if strings.ContainsAny(d, " \t\n\r;|&$`'\"\\") {
+		return "", fmt.Errorf("invalid domain name: %q", raw)
+	}
+	for _, label := range strings.Split(d, ".") {
+		if label == "" || !domainLabelRegexp.MatchString(label) {
+			return "", fmt.Errorf("invalid domain name: %q", raw)
+		}
+	}
+	return d, nil
+}
+
+func sanitizeAppName(raw string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteRune('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "app"
+	}
+	return b.String()
+}
+
+func isCloudflareIP(ipStr string) bool {
+	// Standard Cloudflare anycast ranges (104.16 - 104.31, 172.64 - 172.71, etc.)
+	return strings.HasPrefix(ipStr, "104.21.") ||
+		strings.HasPrefix(ipStr, "172.67.") ||
+		strings.HasPrefix(ipStr, "104.16.") ||
+		strings.HasPrefix(ipStr, "104.17.") ||
+		strings.HasPrefix(ipStr, "104.18.") ||
+		strings.HasPrefix(ipStr, "104.19.") ||
+		strings.HasPrefix(ipStr, "104.20.") ||
+		strings.HasPrefix(ipStr, "104.22.") ||
+		strings.HasPrefix(ipStr, "172.64.") ||
+		strings.HasPrefix(ipStr, "172.65.") ||
+		strings.HasPrefix(ipStr, "172.66.")
+}
+
+func (a *App) CheckDomainDNS(domain, serverIP string) (*DNSCheckResult, error) {
+	d, err := sanitizeDomain(domain)
+	if err != nil {
+		return nil, err
+	}
+
+	ips, err := net.LookupIP(d)
+	resolved := make([]string, 0)
+	isPointing := false
+	isCF := false
+
+	if err == nil {
+		for _, ip := range ips {
+			ipStr := ip.String()
+			resolved = append(resolved, ipStr)
+			if ipStr == serverIP {
+				isPointing = true
+			}
+			if isCloudflareIP(ipStr) {
+				isCF = true
+			}
+		}
+	}
+
+	recordHost := "@"
+	if parts := strings.Split(d, "."); len(parts) > 2 {
+		recordHost = parts[0]
+	}
+
+	return &DNSCheckResult{
+		Domain:       d,
+		ServerIP:     serverIP,
+		ResolvedIPs:  resolved,
+		IsPointing:   isPointing,
+		IsCloudflare: isCF,
+		RecordType:   "A",
+		RecordHost:   recordHost,
+	}, nil
+}
+
+func caddySnippetFor(serverIP, domain string, targetPort int, tlsMode string, includeDirectIP bool) string {
+	cleanIP := strings.TrimSpace(serverIP)
+	cleanDomain := strings.TrimSpace(domain)
+
+	if cleanDomain == "" || tlsMode == "none" {
+		if includeDirectIP && cleanIP != "" {
+			return fmt.Sprintf("http://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", cleanIP, targetPort)
+		}
+		return fmt.Sprintf(":%d {\n\treverse_proxy 127.0.0.1:%d\n}\n", targetPort, targetPort)
+	}
+
+	if tlsMode == "http" {
+		if includeDirectIP && cleanIP != "" && cleanIP != cleanDomain {
+			return fmt.Sprintf("http://%s, http://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", cleanDomain, cleanIP, targetPort)
+		}
+		return fmt.Sprintf("http://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", cleanDomain, targetPort)
+	}
+
+	if includeDirectIP && cleanIP != "" && cleanIP != cleanDomain {
+		return fmt.Sprintf("%s {\n\treverse_proxy 127.0.0.1:%d\n}\n\nhttp://%s {\n\treverse_proxy 127.0.0.1:%d\n}\n",
+			cleanDomain, targetPort, cleanIP, targetPort)
+	}
+	return fmt.Sprintf("%s {\n\treverse_proxy 127.0.0.1:%d\n}\n", cleanDomain, targetPort)
+}
+
+func writeCaddySnippet(client *sshclient.Client, cleanAppName, snippet string) error {
+	encoded := base64.StdEncoding.EncodeToString([]byte(snippet))
+	setup := `mkdir -p /opt/skiff/caddy/conf.d /etc/caddy; ` +
+		`if ! grep -q '/opt/skiff/caddy/conf.d' /etc/caddy/Caddyfile 2>/dev/null; then ` +
+		`echo 'import /opt/skiff/caddy/conf.d/*.caddy' >> /etc/caddy/Caddyfile; fi`
+	if _, err := client.RunCommand(setup); err != nil {
+		return fmt.Errorf("failed to prepare master Caddyfile: %w", err)
+	}
+
+	writeCmd := fmt.Sprintf("echo '%s' | base64 -d > '/opt/skiff/caddy/conf.d/%s.caddy'",
+		encoded, cleanAppName)
+	if _, err := client.RunCommand(writeCmd); err != nil {
+		return fmt.Errorf("failed to write Caddy snippet: %w", err)
+	}
+
+	if out, err := client.RunCommand("caddy validate --config /etc/caddy/Caddyfile 2>&1"); err != nil {
+		return fmt.Errorf("caddy config invalid, not reloading: %s", strings.TrimSpace(out))
+	}
+	if _, err := client.RunCommand("systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy"); err != nil {
+		return fmt.Errorf("caddy reload failed: %w", err)
+	}
+	return nil
+}
+
+func (a *App) ConfigureAppDomain(serverID, appName, domain string, targetPort int, tlsMode string) error {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if targetPort <= 0 {
+		targetPort = 8080
+	}
+	if tlsMode != "http" && tlsMode != "none" {
+		tlsMode = "auto"
+	}
+
+	cleanApp := sanitizeAppName(appName)
+	// Open port in UFW
+	_, _ = client.RunCommand(fmt.Sprintf("ufw allow %d/tcp comment 'Skiff App Port' >/dev/null 2>&1 || true", targetPort))
+
+	d := ""
+	if domain != "" {
+		if d, err = sanitizeDomain(domain); err != nil {
+			return err
+		}
+	}
+
+	// Check if another snippet already owns http://<server_ip> (F4 fix)
+	checkIPConflictCmd := fmt.Sprintf(
+		`grep -l "http://%s" /opt/skiff/caddy/conf.d/*.caddy 2>/dev/null | grep -v "/%s.caddy" || true`,
+		srv.Host, cleanApp)
+	existingOwner, _ := client.RunCommand(checkIPConflictCmd)
+	includeDirectIP := strings.TrimSpace(existingOwner) == ""
+
+	return writeCaddySnippet(client, cleanApp, caddySnippetFor(srv.Host, d, targetPort, tlsMode, includeDirectIP))
+}
+
+func (a *App) GetAppDomainConfig(serverID, appName string) (*DomainRouteConfig, error) {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	clean := sanitizeAppName(appName)
+	out, err := client.RunCommand(fmt.Sprintf("cat '/opt/skiff/caddy/conf.d/%s.caddy' 2>/dev/null || echo ''", clean))
+	if err != nil || strings.TrimSpace(out) == "" {
+		return &DomainRouteConfig{AppName: appName, TLSMode: "auto", TargetPort: 8080, Active: false}, nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	header := strings.TrimSuffix(strings.TrimSpace(lines[0]), " {")
+
+	tlsMode := "auto"
+	domain := header
+	if strings.HasPrefix(header, "http://") {
+		tlsMode = "http"
+		domain = strings.TrimPrefix(header, "http://")
+	} else if strings.HasPrefix(header, ":") {
+		tlsMode = "none"
+		domain = ""
+	}
+
+	port := 8080
+	for _, l := range lines {
+		if strings.Contains(l, "reverse_proxy") {
+			fields := strings.Split(strings.TrimSpace(l), ":")
+			if len(fields) >= 2 {
+				fmt.Sscanf(strings.TrimSpace(fields[len(fields)-1]), "%d", &port)
+			}
+		}
+	}
+
+	return &DomainRouteConfig{
+		AppName:    appName,
+		Domain:     domain,
+		TargetPort: port,
+		TLSMode:    tlsMode,
+		Active:     true,
+	}, nil
+}
+
+func (a *App) RemoveAppDomain(serverID, appName string) error {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	cmd := fmt.Sprintf("rm -f '/opt/skiff/caddy/conf.d/%s.caddy' && (systemctl reload caddy >/dev/null 2>&1 || true)",
+		sanitizeAppName(appName))
 	_, err = client.RunCommand(cmd)
 	return err
 }
@@ -284,6 +823,10 @@ func (a *App) SaveProject(p store.ProjectConfig) error {
 	return a.store.SaveProject(p)
 }
 
+func (a *App) DeleteProject(projectID string) error {
+	return a.store.DeleteProject(projectID)
+}
+
 func (a *App) DeployProject(projectID string) error {
 	projects := a.store.GetProjects()
 	for _, p := range projects {
@@ -291,6 +834,8 @@ func (a *App) DeployProject(projectID string) error {
 			go func(proj store.ProjectConfig) {
 				if err := a.pipeline.Execute(proj); err != nil {
 					runtime.EventsEmit(a.ctx, "deploy:error", err.Error())
+				} else {
+					runtime.EventsEmit(a.ctx, "deploy:success", proj.ID)
 				}
 			}(p)
 			return nil
@@ -344,8 +889,6 @@ func (a *App) BootstrapVPS(serverID string) error {
 	return a.BootstrapVPSWithStack(serverID, bootstrap.DefaultStackConfig())
 }
 
-// BootstrapVPSWithStack provisions the VPS with the selected stack preset,
-// streaming live output via bootstrap:log / bootstrap:status events.
 func (a *App) BootstrapVPSWithStack(serverID string, cfg bootstrap.StackConfig) error {
 	srv, err := a.store.GetServer(serverID)
 	if err != nil {
@@ -391,8 +934,7 @@ func (a *App) CancelBootstrap() {
 	}
 }
 
-// ResetVPS wipes all Skiff-managed state from the server back to a clean
-// baseline, streaming progress via reset:log / reset:status / reset:error.
+// ResetVPS wipes remote services and layout, and deletes all associated local project recipes.
 func (a *App) ResetVPS(serverID string) error {
 	srv, err := a.store.GetServer(serverID)
 	if err != nil {
@@ -424,6 +966,8 @@ func (a *App) ResetVPS(serverID string) error {
 			runtime.EventsEmit(a.ctx, "reset:status", "failed")
 			runtime.EventsEmit(a.ctx, "reset:error", err.Error())
 		} else {
+			// Wipe local project recipes bound to this server
+			_ = a.store.DeleteProjectsByServer(serverID)
 			runtime.EventsEmit(a.ctx, "reset:status", "success")
 		}
 	}()
@@ -449,8 +993,6 @@ type DatabaseInfo struct {
 	Active           bool   `json:"active"`
 }
 
-// dbLiveVersion queries the database binary for its actual version.
-// Falls back to "" when the binary is missing or unparsable.
 func dbLiveVersion(client *sshclient.Client, dbType string) string {
 	var probe string
 	switch dbType {
@@ -470,7 +1012,6 @@ func dbLiveVersion(client *sshclient.Client, dbType string) string {
 	return versionRegexp.FindString(out)
 }
 
-// dbServiceName maps a skiff dbType to its systemd unit.
 func dbServiceName(dbType string) string {
 	switch dbType {
 	case "postgres":
@@ -478,11 +1019,10 @@ func dbServiceName(dbType string) string {
 	case "mysql":
 		return "mariadb"
 	default:
-		return dbType // surrealdb
+		return dbType
 	}
 }
 
-// readDatabaseInfo loads /opt/skiff/data/<dbType>/info.json from the VPS.
 func readDatabaseInfo(client *sshclient.Client, dbType string) (*DatabaseInfo, error) {
 	cmd := fmt.Sprintf("cat /opt/skiff/data/%s/info.json 2>/dev/null || echo '{}'", dbType)
 	raw, err := client.RunCommand(cmd)
@@ -500,8 +1040,6 @@ func readDatabaseInfo(client *sshclient.Client, dbType string) (*DatabaseInfo, e
 	return &info, nil
 }
 
-// GetDatabaseInfo returns connection details, storage backend, launch command
-// and live service state for a managed database.
 func (a *App) GetDatabaseInfo(serverID, dbType string) (*DatabaseInfo, error) {
 	srv, err := a.store.GetServer(serverID)
 	if err != nil {
@@ -521,7 +1059,6 @@ func (a *App) GetDatabaseInfo(serverID, dbType string) (*DatabaseInfo, error) {
 	status, _ := client.RunCommand(fmt.Sprintf("systemctl is-active %s 2>/dev/null || echo inactive", dbServiceName(dbType)))
 	info.Active = strings.TrimSpace(status) == "active"
 
-	// Prefer the live binary version over the provision-time record.
 	if live := dbLiveVersion(client, dbType); live != "" {
 		info.Version = live
 	}
@@ -541,14 +1078,10 @@ func (a *App) GetDatabaseInfo(serverID, dbType string) (*DatabaseInfo, error) {
 	return info, nil
 }
 
-// shellSingleQuote wraps a value in single quotes for remote shell use.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// BackupAndDownloadDatabase dumps the remote database, then streams the dump
-// file over SSH into a local file chosen via the native save dialog.
-// Returns the local path, or an error (including user cancellation).
 func (a *App) BackupAndDownloadDatabase(serverID, dbType string) (string, error) {
 	srv, err := a.store.GetServer(serverID)
 	if err != nil {
@@ -575,8 +1108,6 @@ func (a *App) BackupAndDownloadDatabase(serverID, dbType string) (string, error)
 		dumpCmd = fmt.Sprintf("surreal export --conn http://127.0.0.1:%d --user %s --pass %s",
 			info.Port,
 			shellSingleQuote(info.User), shellSingleQuote(info.Password))
-		// Scope the export only when the engine tracks a namespace/database
-		// (clean-slate engines leave these empty; export then covers all).
 		if info.Namespace != "" && info.Database != "" {
 			dumpCmd += fmt.Sprintf(" --ns %s --db %s",
 				shellSingleQuote(info.Namespace), shellSingleQuote(info.Database))
@@ -594,7 +1125,6 @@ func (a *App) BackupAndDownloadDatabase(serverID, dbType string) (string, error)
 		return "", fmt.Errorf("unsupported database type: %s", dbType)
 	}
 
-	// 1. Local save destination (native dialog; empty = user cancelled)
 	localPath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "Save Database Backup",
 		DefaultFilename: defaultFilename,
@@ -603,12 +1133,10 @@ func (a *App) BackupAndDownloadDatabase(serverID, dbType string) (string, error)
 		return "", fmt.Errorf("backup cancelled")
 	}
 
-	// 2. Run the remote dump
 	if _, err := client.RunCommand(fmt.Sprintf("mkdir -p /opt/skiff/backups && %s", dumpCmd)); err != nil {
 		return "", fmt.Errorf("remote database dump failed: %w", err)
 	}
 
-	// 3. Stream the dump file down over SSH
 	session, err := client.GetRawSSHClient().NewSession()
 	if err != nil {
 		return "", err
