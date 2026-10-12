@@ -19,3 +19,5 @@ Thumbs.db
 
 # Local secrets (never commit live credentials)
 .skiff/
+
+codebase.txt
