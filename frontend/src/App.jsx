@@ -531,6 +531,7 @@ export default function App() {
             server={selectedServer}
             onBack={() => setActiveView("servers")}
             onOpenDeployments={() => setActiveView("deployments")}
+            onOpenBootstrap={() => handleBootstrapPrompt(selectedServer)}
             onOpenDatabaseModal={handleOpenDatabaseModal}
             onProbe={() => handleTestConnection(selectedServer)}
             probing={testingServerId === selectedServer.id}

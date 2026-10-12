@@ -123,11 +123,29 @@ func (a *App) GetServerOverview(serverID string) (*ServerOverview, error) {
 		return nil, err
 	}
 
+	// Only report services whose systemd unit actually exists on the host.
+	// `systemctl is-active` alone cannot distinguish "installed but stopped"
+	// from "never installed" (both are non-active), so gate on `systemctl cat`
+	// succeeding. Also discover per-app services matching /opt/skiff/apps/*.
 	checkServicesCmd := `sh -c '
-for s in caddy surrealdb postgresql mariadb; do
-  STATUS=$(systemctl is-active $s 2>/dev/null || echo "inactive")
-  echo "$s:$STATUS"
+CANDIDATES="caddy surrealdb postgresql mariadb mysql"
+for s in $CANDIDATES; do
+  if systemctl cat "$s.service" 2>/dev/null || [ -d "/opt/skiff/data/$s" ]; then
+    STATUS=$(systemctl is-active "$s" 2>/dev/null || echo "stopped")
+    echo "service:$s:$STATUS"
+  fi
 done
+if [ -d /opt/skiff/apps ]; then
+  for app in /opt/skiff/apps/*; do
+    if [ -d "$app" ]; then
+      APP_NAME=$(basename "$app")
+      if systemctl cat "$APP_NAME.service" 2>/dev/null; then
+        STATUS=$(systemctl is-active "$APP_NAME" 2>/dev/null || echo "stopped")
+        echo "appservice:$APP_NAME:$STATUS"
+      fi
+    fi
+  done
+fi
 echo "---"
 ls -1 /opt/skiff/apps 2>/dev/null || true
 '`
@@ -139,16 +157,32 @@ ls -1 /opt/skiff/apps 2>/dev/null || true
 	parts := strings.Split(out, "---")
 	if len(parts) >= 1 {
 		for _, l := range strings.Split(strings.TrimSpace(parts[0]), "\n") {
-			pair := strings.SplitN(strings.TrimSpace(l), ":", 2)
-			if len(pair) == 2 && pair[0] != "" {
-				isActive := pair[1] == "active"
-				services = append(services, ServiceStatus{
-					Name:    pair[0],
-					Active:  isActive,
-					Running: isActive,
-					Status:  pair[1],
-				})
+			if strings.TrimSpace(l) == "" {
+				continue
 			}
+			fields := strings.SplitN(strings.TrimSpace(l), ":", 3)
+			if len(fields) < 3 {
+				continue
+			}
+			kind, name, st := fields[0], fields[1], strings.TrimSpace(fields[2])
+			if name == "" {
+				continue
+			}
+			isActive := st == "active"
+
+			// App daemons are labeled so the UI can strip the suffix
+			// before issuing systemctl commands.
+			displayName := name
+			if kind == "appservice" {
+				displayName = fmt.Sprintf("%s (App)", name)
+			}
+
+			services = append(services, ServiceStatus{
+				Name:    displayName,
+				Active:  isActive,
+				Running: isActive,
+				Status:  st,
+			})
 		}
 	}
 
