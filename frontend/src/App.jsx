@@ -1244,7 +1244,7 @@ export default function App() {
                   </div>
 
                   {/* TWO-COLUMN LAYOUT: RELEASES LIST (LEFT) & DOMAIN/LOGS (RIGHT) */}
-                  <div className="flex-1 grid grid-cols-1 md:grid-cols-12 gap-3.5 overflow-hidden min-h-0">
+                  <div className="flex-none grid grid-cols-1 md:grid-cols-12 gap-3.5 items-start">
                     {/* LEFT COLUMN: RELEASES COLUMN LIST WITH DELETE BUTTON */}
                     <div className="md:col-span-5 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-col overflow-hidden min-h-0 min-w-0">
                       <div className="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
@@ -1265,7 +1265,7 @@ export default function App() {
                         </button>
                       </div>
 
-                      <div className="flex-1 overflow-y-auto custom-scroll space-y-2 py-3">
+                      <div className="flex-1 overflow-y-auto custom-scroll space-y-2 py-3 max-h-[380px]">
                         {releasesList.map((rel) => {
                           const isBusy = deletingReleaseId === rel.id || activatingReleaseId === rel.id;
                           return (
@@ -1338,7 +1338,7 @@ export default function App() {
                     </div>
 
                     {/* RIGHT COLUMN: DOMAIN MANAGEMENT & LOGS TABS */}
-                    <div className="md:col-span-7 flex flex-col overflow-hidden min-h-0 min-w-0 space-y-2">
+                    <div className="md:col-span-7 flex flex-col min-w-0 space-y-2">
                       <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 shrink-0">
                         <div className="flex items-center gap-1.5">
                           <button
@@ -1367,7 +1367,7 @@ export default function App() {
                       </div>
 
                       {deployCockpitTab === "domain" && (
-                        <div className="flex-1 overflow-y-auto custom-scroll">
+                        <div className="min-w-0">
                           <DeployDomainSection
                             server={selectedServer}
                             project={activeProject}
@@ -1381,7 +1381,7 @@ export default function App() {
                       )}
 
                       {deployCockpitTab === "terminal" && (
-                        <div className="flex-1 bg-black border border-slate-800 rounded-2xl p-3.5 font-mono text-[11px] overflow-y-auto custom-scroll space-y-1">
+                        <div className="bg-black border border-slate-800 rounded-2xl p-3.5 font-mono text-[11px] overflow-y-auto custom-scroll space-y-1 max-h-[420px] min-w-0">
                           <div className="text-slate-600 border-b border-slate-900 pb-2 mb-2 flex items-center justify-between">
                             <span className="text-emerald-500 text-[10px]">[PIPELINE STREAM]</span>
                             <button
