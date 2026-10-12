@@ -29,6 +29,8 @@ export function GetServers():Promise<Array<store.ServerConfig>>;
 
 export function ReadSkiffConfigFromPath(arg1:string):Promise<store.ProjectConfig>;
 
+export function ResetVPS(arg1:string):Promise<void>;
+
 export function RollbackProject(arg1:string):Promise<void>;
 
 export function SaveProject(arg1:store.ProjectConfig):Promise<void>;

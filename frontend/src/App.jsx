@@ -21,6 +21,7 @@ import ConfirmModal from "./components/ConfirmModal.jsx";
 import TelemetryModal from "./components/TelemetryModal.jsx";
 import ProjectModal from "./components/ProjectModal.jsx";
 import BootstrapModal from "./components/BootstrapModal.jsx";
+import ResetVPSModal from "./components/ResetVPSModal.jsx";
 import DatabaseManageModal from "./components/DatabaseManageModal.jsx";
 import ServerManageView from "./components/ServerManageView.jsx";
 import CustomSelect from "./components/CustomSelect.jsx";
@@ -42,6 +43,7 @@ export default function App() {
     preflight: "idle",
     build: "idle",
     transfer: "idle",
+    setup: "idle",
     activate: "idle",
     verify: "idle",
   });
@@ -54,6 +56,14 @@ export default function App() {
 
   // Bootstrap console
   const [bootstrapState, setBootstrapState] = useState({
+    isOpen: false,
+    server: null,
+    logs: [],
+    status: "idle",
+  });
+
+  // Full VPS reset console
+  const [resetState, setResetState] = useState({
     isOpen: false,
     server: null,
     logs: [],
@@ -127,6 +137,18 @@ export default function App() {
       window.runtime.EventsOn("bootstrap:error", (err) => {
         addToast("error", "Bootstrap Failed", err, 6000);
       });
+      window.runtime.EventsOn("reset:log", (line) => {
+        setResetState((prev) => ({ ...prev, logs: [...prev.logs, line] }));
+      });
+      window.runtime.EventsOn("reset:status", (status) => {
+        setResetState((prev) => ({ ...prev, status }));
+        if (status === "success") {
+          addToast("success", "VPS Reset Complete", "Server is clean and ready to bootstrap.");
+        }
+      });
+      window.runtime.EventsOn("reset:error", (err) => {
+        addToast("error", "Reset Failed", err, 6000);
+      });
     }
 
     return () => {
@@ -138,6 +160,9 @@ export default function App() {
         window.runtime.EventsOff("bootstrap:log");
         window.runtime.EventsOff("bootstrap:status");
         window.runtime.EventsOff("bootstrap:error");
+        window.runtime.EventsOff("reset:log");
+        window.runtime.EventsOff("reset:status");
+        window.runtime.EventsOff("reset:error");
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,7 +265,7 @@ export default function App() {
     if (!activeProject || isDeploying) return;
     setIsDeploying(true);
     setDeployLogs([]);
-    setSteps({ preflight: "idle", build: "idle", transfer: "idle", activate: "idle", verify: "idle" });
+    setSteps({ preflight: "idle", build: "idle", transfer: "idle", setup: "idle", activate: "idle", verify: "idle" });
     addToast("info", "Deploying", `Shipping ${activeProject.name} to ${selectedServer?.name || "VPS"}`);
 
     try {
@@ -316,6 +341,20 @@ export default function App() {
     window.go.main.App.CancelBootstrap();
     setBootstrapState((prev) => ({ ...prev, status: "failed" }));
     addToast("warning", "Aborted", "Bootstrap cancelled by user.");
+  };
+
+  const handleOpenReset = (srv) => {
+    if (!srv) return;
+    setResetState({ isOpen: true, server: srv, logs: [], status: "idle" });
+  };
+
+  const handleConfirmReset = () => {
+    if (!resetState.server) return;
+    setResetState((prev) => ({ ...prev, logs: [], status: "running" }));
+    window.go.main.App.ResetVPS(resetState.server.id).catch((err) => {
+      addToast("error", "Reset Execution Error", String(err));
+      setResetState((prev) => ({ ...prev, status: "failed" }));
+    });
   };
 
   const handleStartLogs = () => {
@@ -533,6 +572,7 @@ export default function App() {
             onOpenDeployments={() => setActiveView("deployments")}
             onOpenBootstrap={() => handleBootstrapPrompt(selectedServer)}
             onOpenDatabaseModal={handleOpenDatabaseModal}
+            onOpenResetModal={() => handleOpenReset(selectedServer)}
             onProbe={() => handleTestConnection(selectedServer)}
             probing={testingServerId === selectedServer.id}
             addToast={addToast}
@@ -629,19 +669,20 @@ export default function App() {
                   </div>
 
                   {/* Step Tracker */}
-                  <div className="grid grid-cols-5 gap-2.5">
+                  <div className="grid grid-cols-6 gap-2">
                     {[
                       { key: "preflight", label: "1. Preflight" },
                       { key: "build", label: "2. Local Build" },
                       { key: "transfer", label: "3. Tar Stream" },
-                      { key: "activate", label: "4. Activation" },
-                      { key: "verify", label: "5. Verification" },
+                      { key: "setup", label: "4. Remote Setup" },
+                      { key: "activate", label: "5. Activation" },
+                      { key: "verify", label: "6. Verification" },
                     ].map((st) => {
                       const status = steps[st.key];
                       return (
                         <div
                           key={st.key}
-                          className={`p-3 rounded-xl border flex items-center justify-between ${
+                          className={`p-2.5 rounded-xl border flex items-center justify-between gap-1 ${
                             status === "success"
                               ? "bg-emerald-950/20 border-emerald-500/40 text-emerald-300"
                               : status === "running"
@@ -651,10 +692,10 @@ export default function App() {
                               : "bg-slate-900/60 border-slate-800 text-slate-500"
                           }`}
                         >
-                          <span className="font-semibold text-[11px]">{st.label}</span>
-                          {status === "success" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
-                          {status === "failed" && <XCircle className="w-3.5 h-3.5 text-rose-400" />}
-                          {status === "running" && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                          <span className="font-semibold text-[10px] truncate">{st.label}</span>
+                          {status === "success" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                          {status === "failed" && <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />}
+                          {status === "running" && <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />}
                         </div>
                       );
                     })}
@@ -875,6 +916,16 @@ export default function App() {
         server={selectedServer}
         dbType={dbModal.dbType}
         addToast={addToast}
+      />
+
+      {/* FULL VPS RESET MODAL */}
+      <ResetVPSModal
+        isOpen={resetState.isOpen}
+        onClose={() => setResetState((prev) => ({ ...prev, isOpen: false }))}
+        server={resetState.server}
+        logs={resetState.logs}
+        status={resetState.status}
+        onConfirmReset={handleConfirmReset}
       />
 
       {/* TOAST SYSTEM */}

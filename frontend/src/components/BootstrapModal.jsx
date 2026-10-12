@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   Copy,
+  KeyRound,
   RefreshCw,
   Terminal,
   Wrench,
@@ -12,30 +13,65 @@ import CustomSelect from "./CustomSelect.jsx";
 
 const STACK_PRESETS = [
   {
-    id: "esper",
-    title: "Esper Stack (SurrealDB + Caddy + Swap)",
-    desc: "SurrealDB with selectable storage engine, Caddy reverse proxy, and 1.5GB swapfile.",
+    id: "surrealdb",
+    title: "SurrealDB Engine (Multi-Tenant + Caddy + Swap)",
+    desc: "Clean-slate SurrealDB with selectable storage backend, Caddy reverse proxy, and 1.5GB swap.",
     engine: "SurrealDB",
+    versions: [
+      { value: "v2.2.1", label: "v2.2.1 (Latest Stable)" },
+      { value: "v2.1.4", label: "v2.1.4" },
+      { value: "v2.0.4", label: "v2.0.4" },
+      { value: "v1.5.4", label: "v1.5.4 (Legacy v1)" },
+    ],
+    defaultVersion: "v2.2.1",
   },
   {
     id: "postgres",
-    title: "Modern Web (PostgreSQL 16 + Caddy + Swap)",
-    desc: "PostgreSQL 16 tuned for low-memory VPS environments with Caddy.",
-    engine: "PostgreSQL 16",
+    title: "PostgreSQL (Caddy + Swap)",
+    desc: "PostgreSQL tuned for low-memory VPS environments with Caddy.",
+    engine: "PostgreSQL",
+    versions: [
+      { value: "16", label: "PostgreSQL 16 (Recommended)" },
+      { value: "15", label: "PostgreSQL 15" },
+      { value: "14", label: "PostgreSQL 14" },
+    ],
+    defaultVersion: "16",
   },
   {
     id: "mysql",
-    title: "Classic LEMP (MariaDB/MySQL + Caddy + Swap)",
+    title: "Classic LEMP (MariaDB + Caddy + Swap)",
     desc: "MariaDB with low-memory InnoDB configuration and Caddy.",
     engine: "MariaDB",
+    versions: [
+      { value: "10.11", label: "MariaDB 10.11 (LTS)" },
+      { value: "11.4", label: "MariaDB 11.4 (Latest)" },
+    ],
+    defaultVersion: "10.11",
   },
   {
     id: "base",
-    title: "Base Web Stack (Caddy + Swap Only)",
-    desc: "No database daemon. Best for SQLite, flat-file, or external cloud databases.",
+    title: "Base Stack (Caddy + Swap Only)",
+    desc: "No database daemon. Best for SQLite or external managed cloud databases.",
     engine: "None (SQLite/External)",
+    versions: [],
+    defaultVersion: "",
   },
 ];
+
+function generateStrongPassword() {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*";
+  const cryptoObj = window.crypto || window.msCrypto;
+  if (!cryptoObj?.getRandomValues) {
+    return `skiff-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+  }
+  const values = new Uint32Array(20);
+  cryptoObj.getRandomValues(values);
+  let pass = "";
+  for (let i = 0; i < 20; i++) {
+    pass += chars[values[i] % chars.length];
+  }
+  return pass;
+}
 
 export default function BootstrapModal({
   isOpen,
@@ -46,21 +82,27 @@ export default function BootstrapModal({
   onStartBootstrap,
   onCancel,
 }) {
-  const [selectedPreset, setSelectedPreset] = useState("esper");
-  const [dbUser, setDbUser] = useState("root");
+  const [selectedPreset, setSelectedPreset] = useState("surrealdb");
+  const [selectedVersion, setSelectedVersion] = useState("v2.2.1");
+  const [dbUser, setDbUser] = useState("admin");
   const [dbPassword, setDbPassword] = useState("");
-  const [dbName, setDbName] = useState("production");
+  const [dbName, setDbName] = useState("");
   const [surrealStorage, setSurrealStorage] = useState("surrealkv");
-  const [surrealNs, setSurrealNs] = useState("esper");
+  const [formError, setFormError] = useState("");
   const [copied, setCopied] = useState(false);
 
   const logContainerRef = useRef(null);
 
-  // Reset the form each time the modal opens for a fresh provisioning run
+  // Fresh credentials for every provisioning run — never reuse or default
+  // to well-known passwords.
   useEffect(() => {
     if (isOpen && status === "idle") {
-      setSelectedPreset("esper");
-      setDbPassword("");
+      setSelectedPreset("surrealdb");
+      setSelectedVersion("v2.2.1");
+      setDbUser("admin");
+      setDbPassword(generateStrongPassword());
+      setDbName("");
+      setFormError("");
     }
   }, [isOpen, status]);
 
@@ -72,14 +114,31 @@ export default function BootstrapModal({
 
   if (!isOpen) return null;
 
+  const activePreset = STACK_PRESETS.find((p) => p.id === selectedPreset);
+
+  const handlePresetSelect = (id) => {
+    setSelectedPreset(id);
+    const preset = STACK_PRESETS.find((p) => p.id === id);
+    setSelectedVersion(preset?.defaultVersion || "");
+  };
+
   const handleStart = () => {
+    if (!dbUser.trim()) {
+      setFormError("Root user is required.");
+      return;
+    }
+    if (!dbPassword.trim()) {
+      setFormError("Generate or type a root password before provisioning.");
+      return;
+    }
+    setFormError("");
     onStartBootstrap({
       stackType: selectedPreset,
-      dbUser: selectedPreset === "esper" ? dbUser || "root" : dbUser || "skiff_user",
-      dbPassword: dbPassword || (selectedPreset === "esper" ? "root" : "skiff_secure_pass"),
-      dbName: dbName || "production",
+      version: selectedVersion || activePreset?.defaultVersion || "",
+      dbUser: dbUser.trim(),
+      dbPassword: dbPassword.trim(),
+      dbName: dbName.trim(),
       surrealStorage,
-      surrealNs: surrealNs || "esper",
       enableSwap: true,
       installCaddy: true,
     });
@@ -142,7 +201,7 @@ export default function BootstrapModal({
           <div className="p-6 space-y-5 overflow-y-auto flex-1">
             <div>
               <span className="text-[10px] font-mono uppercase text-slate-400 block mb-2 font-semibold">
-                Select Purpose &amp; Database Stack
+                Select Database Stack Preset
               </span>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {STACK_PRESETS.map((p) => {
@@ -150,7 +209,7 @@ export default function BootstrapModal({
                   return (
                     <div
                       key={p.id}
-                      onClick={() => setSelectedPreset(p.id)}
+                      onClick={() => handlePresetSelect(p.id)}
                       className={`p-4 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
                         isSelected
                           ? "bg-indigo-950/60 border-indigo-500 text-white ring-1 ring-indigo-500/40"
@@ -165,7 +224,7 @@ export default function BootstrapModal({
                         <p className="text-[11px] text-slate-400 leading-relaxed">{p.desc}</p>
                       </div>
                       <div className="mt-2 pt-2 border-t border-slate-800/80 text-[10px] font-mono text-slate-500">
-                        Database: {p.engine}
+                        Engine: {p.engine}
                       </div>
                     </div>
                   );
@@ -173,65 +232,86 @@ export default function BootstrapModal({
               </div>
             </div>
 
-            {/* Preset-specific credentials */}
+            {/* Custom root credentials */}
             {selectedPreset !== "base" && (
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
-                <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold block">
-                  Database Credentials Setup
-                </span>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono uppercase text-slate-400 font-semibold block">
+                    Root Administrative Credentials
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDbPassword(generateStrongPassword())}
+                    className="text-[10px] text-indigo-400 hover:text-indigo-300 font-mono inline-flex items-center gap-1"
+                  >
+                    <KeyRound className="w-3 h-3" /> Generate Password
+                  </button>
+                </div>
+
+                <div className={`grid gap-3 ${selectedPreset === "surrealdb" ? "grid-cols-3" : "grid-cols-2"}`}>
                   <div>
-                    <label className="text-[10px] font-mono text-slate-500 block mb-1">User</label>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">Service Version</label>
+                    <CustomSelect
+                      value={selectedVersion}
+                      onChange={setSelectedVersion}
+                      options={activePreset?.versions || []}
+                      placeholder="Select version..."
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">Root User</label>
                     <input
                       value={dbUser}
                       onChange={(e) => setDbUser(e.target.value)}
+                      placeholder="admin"
                       className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] font-mono text-slate-500 block mb-1">Password</label>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">Root Password</label>
                     <input
-                      type="password"
-                      placeholder={selectedPreset === "esper" ? "root (default)" : "skiff_secure_pass (default)"}
+                      type="text"
+                      required
                       value={dbPassword}
                       onChange={(e) => setDbPassword(e.target.value)}
+                      placeholder="Required — generate or type one"
                       className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
                     />
                   </div>
-                  <div>
-                    <label className="text-[10px] font-mono text-slate-500 block mb-1">
-                      {selectedPreset === "esper" ? "Database" : "Database Name"}
-                    </label>
-                    <input
-                      value={dbName}
-                      onChange={(e) => setDbName(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                {selectedPreset === "esper" && (
-                  <div className="grid grid-cols-2 gap-3">
+                  {selectedPreset !== "surrealdb" && (
                     <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-1">SurrealDB Storage Backend</label>
-                      <CustomSelect
-                        value={surrealStorage}
-                        onChange={setSurrealStorage}
-                        options={[
-                          { value: "surrealkv", label: "SurrealKV (Embedded Engine)" },
-                          { value: "file", label: "File (Classic Key-Value)" },
-                          { value: "rocksdb", label: "RocksDB (High-Concurrency)" },
-                        ]}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-mono text-slate-500 block mb-1">Namespace</label>
+                      <label className="text-[10px] font-mono text-slate-500 block mb-1">Initial Database</label>
                       <input
-                        value={surrealNs}
-                        onChange={(e) => setSurrealNs(e.target.value)}
+                        value={dbName}
+                        onChange={(e) => setDbName(e.target.value)}
+                        placeholder="skiff_db (default)"
                         className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
                       />
                     </div>
+                  )}
+                </div>
+
+                {selectedPreset === "surrealdb" && (
+                  <div>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">Storage Engine</label>
+                    <CustomSelect
+                      value={surrealStorage}
+                      onChange={setSurrealStorage}
+                      options={[
+                        { value: "surrealkv", label: "SurrealKV (Embedded Key-Value Engine)" },
+                        { value: "file", label: "File (Classic File-based)" },
+                        { value: "rocksdb", label: "RocksDB (LSM-Tree Concurrency)" },
+                      ]}
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      SurrealDB starts as a clean slate. Apps define their own namespaces and databases via deployment recipes.
+                    </p>
+                  </div>
+                )}
+
+                {formError && (
+                  <div className="text-[11px] font-mono text-rose-400 bg-rose-950/30 border border-rose-800/50 rounded-lg px-3 py-2">
+                    {formError}
                   </div>
                 )}
               </div>

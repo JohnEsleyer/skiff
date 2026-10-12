@@ -50,6 +50,10 @@ export function ReadSkiffConfigFromPath(arg1) {
   return window['go']['main']['App']['ReadSkiffConfigFromPath'](arg1);
 }
 
+export function ResetVPS(arg1) {
+  return window['go']['main']['App']['ResetVPS'](arg1);
+}
+
 export function RollbackProject(arg1) {
   return window['go']['main']['App']['RollbackProject'](arg1);
 }

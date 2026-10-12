@@ -10,6 +10,7 @@ import {
   Layers,
   Plus,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react";
 
 const DB_SERVICE_TYPES = ["surrealdb", "postgres", "postgresql", "mysql", "mariadb"];
@@ -35,6 +36,7 @@ export default function ServerManageView({
   onOpenDeployments,
   onOpenBootstrap,
   onOpenDatabaseModal,
+  onOpenResetModal,
   onProbe,
   probing = false,
   addToast,
@@ -220,7 +222,14 @@ export default function ServerManageView({
                       <Database className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                      <h4 className="text-xs font-bold text-white capitalize">{svc.name}</h4>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold text-white capitalize">{svc.name}</h4>
+                        {svc.version && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 text-indigo-300 border border-slate-800 shrink-0">
+                            {svc.version}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1.5 text-[11px] font-mono mt-0.5">
                         <span
                           className={`w-2 h-2 rounded-full ${
@@ -282,7 +291,14 @@ export default function ServerManageView({
                       <Globe className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                      <h4 className="text-xs font-bold text-white capitalize">{svc.name}</h4>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold text-white capitalize">{svc.name}</h4>
+                        {svc.version && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 text-indigo-300 border border-slate-800 shrink-0">
+                            {svc.version}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1.5 text-[11px] font-mono mt-0.5">
                         <span
                           className={`w-2 h-2 rounded-full ${svc.active ? "bg-emerald-400" : "bg-rose-400"}`}
@@ -340,6 +356,25 @@ export default function ServerManageView({
             </div>
           )}
         </div>
+      </div>
+
+      {/* Danger Zone: Full VPS Reset to Zero */}
+      <div className="p-4 rounded-2xl bg-rose-950/20 border border-rose-900/40 flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
+            <RotateCcw className="w-4 h-4 text-rose-400" />
+            <span>Reset VPS Back to Clean Slate</span>
+          </h3>
+          <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+            Stops all apps and database daemons, removes systemd units and swap, and wipes <code className="text-rose-300 font-mono">/opt/skiff</code> to zero.
+          </p>
+        </div>
+        <button
+          onClick={onOpenResetModal}
+          className="px-4 py-2 bg-rose-600/80 hover:bg-rose-600 text-white rounded-xl text-xs font-semibold shrink-0 transition active:scale-95 shadow-sm"
+        >
+          Reset VPS...
+        </button>
       </div>
     </div>
   );

@@ -7,8 +7,21 @@ import {
   ExternalLink,
   HardDrive,
   RefreshCw,
+  Terminal,
   X,
 } from "lucide-react";
+
+const copyCell = (label, value, copiedKey, onCopy) => (
+  <div className="bg-slate-900 p-2 rounded-lg border border-slate-800 flex items-center justify-between gap-2 min-w-0">
+    <div className="min-w-0">
+      <span className="text-slate-500 text-[9px] block">{label}</span>
+      <span className="text-white font-bold truncate block">{value}</span>
+    </div>
+    <button onClick={() => onCopy(value, label)} className="p-1 text-slate-400 hover:text-white shrink-0">
+      {copiedKey === label ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+    </button>
+  </div>
+);
 
 export default function DatabaseManageModal({ isOpen, onClose, server, dbType, addToast }) {
   const [info, setInfo] = useState(null);
@@ -80,6 +93,11 @@ export default function DatabaseManageModal({ isOpen, onClose, server, dbType, a
                 <h3 className="text-sm font-bold text-white tracking-tight capitalize">
                   {info?.engine || dbType} Overview
                 </h3>
+                {info?.version && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 text-indigo-300 border border-slate-800">
+                    {info.version}
+                  </span>
+                )}
                 {info && (
                   <span
                     className={`text-[9px] font-mono uppercase px-2 py-0.5 rounded-full font-bold border ${
@@ -171,22 +189,52 @@ export default function DatabaseManageModal({ isOpen, onClose, server, dbType, a
                 )}
               </div>
 
-              {/* Surrealist Quick Connect */}
-              {info.surrealistUri && (
-                <div className="pt-2 border-t border-slate-900 space-y-1.5">
+              {/* Surrealist Quick Connect — per-field copy for local Surrealist */}
+              {dbType === "surrealdb" && (
+                <div className="pt-2 border-t border-indigo-500/20 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono text-indigo-400 flex items-center gap-1">
-                      <ExternalLink className="w-3 h-3" /> Connect via Surrealist Desktop App
+                    <span className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                      <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Connect from Surrealist (Desktop / Web)</span>
                     </span>
-                    <button
-                      onClick={() => copyToClipboard(info.surrealistUri, "Surrealist Endpoint")}
-                      className="text-[10px] font-mono text-slate-400 hover:text-white underline"
-                    >
-                      {copiedKey === "Surrealist Endpoint" ? "Copied!" : "Copy Endpoint"}
-                    </button>
+                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/40">
+                      Port 8000 Open
+                    </span>
                   </div>
-                  <div className="p-2 bg-slate-900 rounded-lg border border-slate-800 font-mono text-[11px] text-slate-300 select-text break-all">
-                    {info.surrealistUri}
+
+                  <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                    {copyCell("WebSocket Endpoint", `ws://${server?.host}:${info.port}/rpc`, copiedKey, copyToClipboard)}
+                    {copyCell("HTTP Endpoint", `http://${server?.host}:${info.port}/rpc`, copiedKey, copyToClipboard)}
+                    <div className="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                      <span className="text-slate-500 text-[9px] block">Auth Level</span>
+                      <span className="text-amber-300 font-bold block">Root</span>
+                    </div>
+                    {copyCell("Username", info.user, copiedKey, copyToClipboard)}
+                    <div className="col-span-2">
+                      {copyCell("Password", info.password, copiedKey, copyToClipboard)}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1">
+                        <Terminal className="w-3 h-3 text-indigo-400" /> Surreal CLI Command
+                      </span>
+                      <button
+                        onClick={() =>
+                          copyToClipboard(
+                            `surreal sql --endpoint http://${server?.host}:${info.port} --username ${info.user} --password '${info.password}'`,
+                            "CLI Command"
+                          )
+                        }
+                        className="text-[10px] font-mono text-slate-400 hover:text-white underline"
+                      >
+                        {copiedKey === "CLI Command" ? "Copied!" : "Copy"}
+                      </button>
+                    </div>
+                    <div className="p-2 bg-slate-900 rounded-lg border border-slate-800 font-mono text-[10px] text-slate-300 break-all select-text">
+                      {`surreal sql --endpoint http://${server?.host}:${info.port} --username ${info.user} --password '••••••••'`}
+                    </div>
                   </div>
                 </div>
               )}

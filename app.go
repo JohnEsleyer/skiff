@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,11 +19,16 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// versionRegexp extracts the first version-like token (e.g. 2.2.1, 16.4)
+// from `<binary> --version` output.
+var versionRegexp = regexp.MustCompile(`[0-9]+\.[0-9]+(\.[0-9]+)?`)
+
 type ServiceStatus struct {
 	Name    string `json:"name"`
 	Active  bool   `json:"active"`
 	Running bool   `json:"running"`
 	Status  string `json:"status"` // e.g. "active", "inactive"
+	Version string `json:"version,omitempty"`
 }
 
 type ServerOverview struct {
@@ -127,12 +133,28 @@ func (a *App) GetServerOverview(serverID string) (*ServerOverview, error) {
 	// `systemctl is-active` alone cannot distinguish "installed but stopped"
 	// from "never installed" (both are non-active), so gate on `systemctl cat`
 	// succeeding. Also discover per-app services matching /opt/skiff/apps/*.
+	// Live binary versions are captured for the management UI.
 	checkServicesCmd := `sh -c '
 CANDIDATES="caddy surrealdb postgresql mariadb mysql"
 for s in $CANDIDATES; do
   if systemctl cat "$s.service" 2>/dev/null || [ -d "/opt/skiff/data/$s" ]; then
     STATUS=$(systemctl is-active "$s" 2>/dev/null || echo "stopped")
-    echo "service:$s:$STATUS"
+    VERSION=""
+    case "$s" in
+      surrealdb)
+        VERSION=$(surreal version 2>/dev/null | head -n 1 | grep -oE "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -n 1 || true)
+        ;;
+      caddy)
+        VERSION=$(caddy version 2>/dev/null | head -n 1 | grep -oE "v?[0-9]+\.[0-9]+(\.[0-9]+)?" | head -n 1 || true)
+        ;;
+      postgresql)
+        VERSION=$(psql --version 2>/dev/null | head -n 1 | grep -oE "[0-9]+\.[0-9]+" | head -n 1 || true)
+        ;;
+      mariadb|mysql)
+        VERSION=$(mariadb --version 2>/dev/null | head -n 1 | grep -oE "[0-9]+\.[0-9]+(\.[0-9]+)?" | head -n 1 || true)
+        ;;
+    esac
+    echo "service:$s:$STATUS:$VERSION"
   fi
 done
 if [ -d /opt/skiff/apps ]; then
@@ -141,7 +163,7 @@ if [ -d /opt/skiff/apps ]; then
       APP_NAME=$(basename "$app")
       if systemctl cat "$APP_NAME.service" 2>/dev/null; then
         STATUS=$(systemctl is-active "$APP_NAME" 2>/dev/null || echo "stopped")
-        echo "appservice:$APP_NAME:$STATUS"
+        echo "appservice:$APP_NAME:$STATUS:"
       fi
     fi
   done
@@ -160,11 +182,15 @@ ls -1 /opt/skiff/apps 2>/dev/null || true
 			if strings.TrimSpace(l) == "" {
 				continue
 			}
-			fields := strings.SplitN(strings.TrimSpace(l), ":", 3)
+			fields := strings.SplitN(strings.TrimSpace(l), ":", 4)
 			if len(fields) < 3 {
 				continue
 			}
 			kind, name, st := fields[0], fields[1], strings.TrimSpace(fields[2])
+			version := ""
+			if len(fields) >= 4 {
+				version = strings.TrimSpace(fields[3])
+			}
 			if name == "" {
 				continue
 			}
@@ -182,6 +208,7 @@ ls -1 /opt/skiff/apps 2>/dev/null || true
 				Active:  isActive,
 				Running: isActive,
 				Status:  st,
+				Version: version,
 			})
 		}
 	}
@@ -364,10 +391,51 @@ func (a *App) CancelBootstrap() {
 	}
 }
 
+// ResetVPS wipes all Skiff-managed state from the server back to a clean
+// baseline, streaming progress via reset:log / reset:status / reset:error.
+func (a *App) ResetVPS(serverID string) error {
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return err
+	}
+
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return fmt.Errorf("SSH connection failed: %w", err)
+	}
+
+	script := bootstrap.GenerateResetScript()
+	runner := bootstrap.NewRunner(client)
+
+	if a.stopLog != nil {
+		close(a.stopLog)
+	}
+	a.stopLog = make(chan struct{})
+
+	go func() {
+		defer client.Close()
+		runtime.EventsEmit(a.ctx, "reset:status", "running")
+
+		err := runner.ExecuteScript(script, func(line string) {
+			runtime.EventsEmit(a.ctx, "reset:log", line)
+		}, a.stopLog)
+
+		if err != nil {
+			runtime.EventsEmit(a.ctx, "reset:status", "failed")
+			runtime.EventsEmit(a.ctx, "reset:error", err.Error())
+		} else {
+			runtime.EventsEmit(a.ctx, "reset:status", "success")
+		}
+	}()
+
+	return nil
+}
+
 // ----------------- Database Management -----------------
 
 type DatabaseInfo struct {
 	Engine           string `json:"engine"`
+	Version          string `json:"version,omitempty"`
 	Port             int    `json:"port"`
 	User             string `json:"user"`
 	Password         string `json:"password"`
@@ -379,6 +447,27 @@ type DatabaseInfo struct {
 	ConnectionString string `json:"connectionString"`
 	SurrealistURI    string `json:"surrealistUri,omitempty"`
 	Active           bool   `json:"active"`
+}
+
+// dbLiveVersion queries the database binary for its actual version.
+// Falls back to "" when the binary is missing or unparsable.
+func dbLiveVersion(client *sshclient.Client, dbType string) string {
+	var probe string
+	switch dbType {
+	case "surrealdb":
+		probe = "surreal version 2>/dev/null | head -n 1"
+	case "postgres":
+		probe = "psql --version 2>/dev/null | head -n 1"
+	case "mysql":
+		probe = "mariadb --version 2>/dev/null | head -n 1 || mysql --version 2>/dev/null | head -n 1"
+	default:
+		return ""
+	}
+	out, err := client.RunCommand(probe)
+	if err != nil {
+		return ""
+	}
+	return versionRegexp.FindString(out)
 }
 
 // dbServiceName maps a skiff dbType to its systemd unit.
@@ -432,6 +521,11 @@ func (a *App) GetDatabaseInfo(serverID, dbType string) (*DatabaseInfo, error) {
 	status, _ := client.RunCommand(fmt.Sprintf("systemctl is-active %s 2>/dev/null || echo inactive", dbServiceName(dbType)))
 	info.Active = strings.TrimSpace(status) == "active"
 
+	// Prefer the live binary version over the provision-time record.
+	if live := dbLiveVersion(client, dbType); live != "" {
+		info.Version = live
+	}
+
 	switch dbType {
 	case "surrealdb":
 		info.SurrealistURI = fmt.Sprintf("ws://%s:%d/rpc", srv.Host, info.Port)
@@ -478,11 +572,16 @@ func (a *App) BackupAndDownloadDatabase(serverID, dbType string) (string, error)
 		}
 		defaultFilename = fmt.Sprintf("surreal_backup_%s.surql", timestamp)
 		remoteFile = fmt.Sprintf("/opt/skiff/backups/surrealdb_backup_%s.surql", timestamp)
-		dumpCmd = fmt.Sprintf("surreal export --conn http://127.0.0.1:%d --user %s --pass %s --ns %s --db %s %s",
+		dumpCmd = fmt.Sprintf("surreal export --conn http://127.0.0.1:%d --user %s --pass %s",
 			info.Port,
-			shellSingleQuote(info.User), shellSingleQuote(info.Password),
-			shellSingleQuote(info.Namespace), shellSingleQuote(info.Database),
-			shellSingleQuote(remoteFile))
+			shellSingleQuote(info.User), shellSingleQuote(info.Password))
+		// Scope the export only when the engine tracks a namespace/database
+		// (clean-slate engines leave these empty; export then covers all).
+		if info.Namespace != "" && info.Database != "" {
+			dumpCmd += fmt.Sprintf(" --ns %s --db %s",
+				shellSingleQuote(info.Namespace), shellSingleQuote(info.Database))
+		}
+		dumpCmd += " " + shellSingleQuote(remoteFile)
 	case "postgres":
 		defaultFilename = fmt.Sprintf("postgres_backup_%s.sql", timestamp)
 		remoteFile = fmt.Sprintf("/opt/skiff/backups/postgres_backup_%s.sql", timestamp)

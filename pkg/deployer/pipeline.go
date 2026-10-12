@@ -1,6 +1,7 @@
 package deployer
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +39,45 @@ func (p *Pipeline) step(stepName string, status string) {
 	}
 }
 
+// RemoteDbCredentials holds the bootstrapped database login used to
+// inject environment variables into remote setup steps.
+type RemoteDbCredentials struct {
+	User     string
+	Password string
+	Port     int
+}
+
+// discoverRemoteDbCredentials reads /opt/skiff/data/surrealdb/info.json when
+// present. Missing file (e.g. base stack) yields empty credentials — setup
+// scripts must tolerate that.
+func discoverRemoteDbCredentials(client *sshclient.Client, p *Pipeline) RemoteDbCredentials {
+	var creds RemoteDbCredentials
+	raw, _ := client.RunCommand("cat /opt/skiff/data/surrealdb/info.json 2>/dev/null || echo '{}'")
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "{}" {
+		return creds
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return creds
+	}
+	if u, ok := parsed["user"].(string); ok {
+		creds.User = u
+	}
+	if pw, ok := parsed["password"].(string); ok {
+		creds.Password = pw
+	}
+	if port, ok := parsed["port"].(float64); ok {
+		creds.Port = int(port)
+	}
+	if creds.Port == 0 {
+		creds.Port = 8000
+	}
+	if creds.User != "" {
+		p.log(fmt.Sprintf("  [INFO] Discovered VPS database credentials for user '%s'", creds.User))
+	}
+	return creds
+}
+
 func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	p.log(fmt.Sprintf("=== Initiating Deployment for '%s' ===", project.Name))
 
@@ -72,6 +112,9 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 		p.step("preflight", "failed")
 		return fmt.Errorf("remote directory setup failed: %w", err)
 	}
+
+	// Discover bootstrapped database credentials for remote setup injection.
+	dbCreds := discoverRemoteDbCredentials(client, p)
 	p.step("preflight", "success")
 
 	// 3. Run Local Build Steps
@@ -100,7 +143,41 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	}
 	p.step("transfer", "success")
 
-	// 5. Atomic Link Activation & Shared Linking
+	// 5. Remote Setup & Migrations (executed inside releaseDir with DB env vars)
+	if len(project.RemoteSetupSteps) > 0 {
+		p.step("setup", "running")
+		p.log(fmt.Sprintf("Executing %d remote setup step(s)...", len(project.RemoteSetupSteps)))
+
+		envPrefix := fmt.Sprintf(
+			"export SKIFF_APP_DIR=%s SKIFF_RELEASE_DIR=%s SKIFF_SHARED_DIR=%s "+
+				"SURREAL_USER=%s SURREAL_PASS=%s SURREAL_PORT=%d SURREAL_ENDPOINT=%s "+
+				"SKIFF_DB_USER=%s SKIFF_DB_PASS=%s SKIFF_DB_PORT=%d; ",
+			shellQuote(project.AppDir), shellQuote(releaseDir), shellQuote(sharedDir),
+			shellQuote(dbCreds.User), shellQuote(dbCreds.Password), dbCreds.Port,
+			shellQuote(fmt.Sprintf("http://127.0.0.1:%d", dbCreds.Port)),
+			shellQuote(dbCreds.User), shellQuote(dbCreds.Password), dbCreds.Port,
+		)
+
+		for idx, s := range project.RemoteSetupSteps {
+			p.log(fmt.Sprintf("[Remote %d/%d] %s", idx+1, len(project.RemoteSetupSteps), s.Name))
+			remoteCmd := fmt.Sprintf("cd %s && chmod +x *.sh 2>/dev/null || true; %s%s",
+				shellQuote(releaseDir), envPrefix, s.Command)
+
+			out, err := client.RunCommand(remoteCmd)
+			if strings.TrimSpace(out) != "" {
+				for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+					p.log("  " + line)
+				}
+			}
+			if err != nil {
+				p.step("setup", "failed")
+				return fmt.Errorf("remote setup step '%s' failed: %w", s.Name, err)
+			}
+		}
+		p.step("setup", "success")
+	}
+
+	// 6. Atomic Link Activation & Shared Linking
 	p.step("activate", "running")
 	p.log("Updating atomic symlinks and restarting services...")
 
@@ -138,7 +215,7 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	}
 	p.step("activate", "success")
 
-	// 6. Verification Probe
+	// 7. Verification Probe
 	if project.HealthURL != "" {
 		p.step("verify", "running")
 		p.log(fmt.Sprintf("Probing health endpoint: %s", project.HealthURL))

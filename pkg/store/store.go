@@ -31,17 +31,21 @@ type BuildStep struct {
 }
 
 type ProjectConfig struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	LocalPath      string         `json:"localPath"`
-	ServerID       string         `json:"serverId"`
-	AppDir         string         `json:"appDir"` // e.g. /opt/skiff/apps/esper
-	BuildSteps     []BuildStep    `json:"buildSteps"`
-	Artifacts      []ArtifactRule `json:"artifacts"`
-	SharedFiles    []string       `json:"sharedFiles"` // e.g. [".env", "uploads", "data"]
-	RestartCommand string         `json:"restartCommand"`
-	HealthURL      string         `json:"healthUrl"`
-	KeepReleases   int            `json:"keepReleases"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	LocalPath   string         `json:"localPath"`
+	ServerID    string         `json:"serverId"`
+	AppDir      string         `json:"appDir"` // e.g. /opt/skiff/apps/esper
+	BuildSteps  []BuildStep    `json:"buildSteps"`
+	Artifacts   []ArtifactRule `json:"artifacts"`
+	SharedFiles []string       `json:"sharedFiles"` // e.g. [".env", "uploads", "data"]
+	// RemoteSetupSteps run on the VPS inside the new release dir after transfer,
+	// e.g. [{name:"DB Setup", command:"bash setup.sh"}]. DB credentials and
+	// release paths are injected as environment variables (see deployer).
+	RemoteSetupSteps []BuildStep `json:"remoteSetupSteps,omitempty"`
+	RestartCommand   string      `json:"restartCommand"`
+	HealthURL        string      `json:"healthUrl"`
+	KeepReleases     int         `json:"keepReleases"`
 }
 
 type AppData struct {

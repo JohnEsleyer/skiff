@@ -2,11 +2,11 @@ export namespace bootstrap {
 	
 	export class StackConfig {
 	    stackType: string;
+	    version: string;
 	    dbUser: string;
 	    dbPassword: string;
 	    dbName: string;
 	    surrealStorage: string;
-	    surrealNs: string;
 	    enableSwap: boolean;
 	    installCaddy: boolean;
 	
@@ -17,11 +17,11 @@ export namespace bootstrap {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.stackType = source["stackType"];
+	        this.version = source["version"];
 	        this.dbUser = source["dbUser"];
 	        this.dbPassword = source["dbPassword"];
 	        this.dbName = source["dbName"];
 	        this.surrealStorage = source["surrealStorage"];
-	        this.surrealNs = source["surrealNs"];
 	        this.enableSwap = source["enableSwap"];
 	        this.installCaddy = source["installCaddy"];
 	    }
@@ -33,6 +33,7 @@ export namespace main {
 	
 	export class DatabaseInfo {
 	    engine: string;
+	    version?: string;
 	    port: number;
 	    user: string;
 	    password: string;
@@ -52,6 +53,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.engine = source["engine"];
+	        this.version = source["version"];
 	        this.port = source["port"];
 	        this.user = source["user"];
 	        this.password = source["password"];
@@ -70,6 +72,7 @@ export namespace main {
 	    active: boolean;
 	    running: boolean;
 	    status: string;
+	    version?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ServiceStatus(source);
@@ -81,6 +84,7 @@ export namespace main {
 	        this.active = source["active"];
 	        this.running = source["running"];
 	        this.status = source["status"];
+	        this.version = source["version"];
 	    }
 	}
 	export class ServerOverview {
@@ -188,6 +192,7 @@ export namespace store {
 	    buildSteps: BuildStep[];
 	    artifacts: ArtifactRule[];
 	    sharedFiles: string[];
+	    remoteSetupSteps?: BuildStep[];
 	    restartCommand: string;
 	    healthUrl: string;
 	    keepReleases: number;
@@ -206,6 +211,7 @@ export namespace store {
 	        this.buildSteps = this.convertValues(source["buildSteps"], BuildStep);
 	        this.artifacts = this.convertValues(source["artifacts"], ArtifactRule);
 	        this.sharedFiles = source["sharedFiles"];
+	        this.remoteSetupSteps = this.convertValues(source["remoteSetupSteps"], BuildStep);
 	        this.restartCommand = source["restartCommand"];
 	        this.healthUrl = source["healthUrl"];
 	        this.keepReleases = source["keepReleases"];
