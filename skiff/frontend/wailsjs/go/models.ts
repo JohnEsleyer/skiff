@@ -1,3 +1,60 @@
+export namespace main {
+	
+	export class ServiceStatus {
+	    name: string;
+	    active: boolean;
+	    running: boolean;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServiceStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.active = source["active"];
+	        this.running = source["running"];
+	        this.status = source["status"];
+	    }
+	}
+	export class ServerOverview {
+	    telemetry?: sshclient.Telemetry;
+	    services: ServiceStatus[];
+	    deployedApps: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ServerOverview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.telemetry = this.convertValues(source["telemetry"], sshclient.Telemetry);
+	        this.services = this.convertValues(source["services"], ServiceStatus);
+	        this.deployedApps = source["deployedApps"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace sshclient {
 	
 	export class Telemetry {

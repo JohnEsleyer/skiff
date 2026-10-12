@@ -10,6 +10,10 @@ export function CancelBootstrap() {
   return window['go']['main']['App']['CancelBootstrap']();
 }
 
+export function ControlServerService(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ControlServerService'](arg1, arg2, arg3);
+}
+
 export function DeleteServer(arg1) {
   return window['go']['main']['App']['DeleteServer'](arg1);
 }
@@ -22,8 +26,16 @@ export function GetProjects() {
   return window['go']['main']['App']['GetProjects']();
 }
 
+export function GetServerOverview(arg1) {
+  return window['go']['main']['App']['GetServerOverview'](arg1);
+}
+
 export function GetServers() {
   return window['go']['main']['App']['GetServers']();
+}
+
+export function ReadSkiffConfigFromPath(arg1) {
+  return window['go']['main']['App']['ReadSkiffConfigFromPath'](arg1);
 }
 
 export function RollbackProject(arg1) {
@@ -36,6 +48,10 @@ export function SaveProject(arg1) {
 
 export function SaveServer(arg1) {
   return window['go']['main']['App']['SaveServer'](arg1);
+}
+
+export function SelectFolderDialog() {
+  return window['go']['main']['App']['SelectFolderDialog']();
 }
 
 export function StartLogStream(arg1, arg2) {
