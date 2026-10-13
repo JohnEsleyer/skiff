@@ -74,17 +74,23 @@ Place in the root of any deployable project:
 ```json
 {
   "id": "esper-production",
-  "name": "Esper Notes",
+  "name": "Esper Backend",
   "localPath": ".",
   "serverId": "",
   "appDir": "/opt/skiff/apps/esper",
+  "domain": "api.esper.yourdomain.com",
+  "targetPort": 8080,
+  "tlsMode": "auto",
   "buildSteps": [
-    { "name": "Frontend", "command": "npm run build" },
     { "name": "Backend", "command": "cargo build --manifest-path server/Cargo.toml --release --target x86_64-unknown-linux-musl" }
   ],
   "artifacts": [
-    { "local": "dist", "remote": "public" },
-    { "local": "server/target/x86_64-unknown-linux-musl/release/esper-server", "remote": "esper-server" }
+    { "local": "server/target/x86_64-unknown-linux-musl/release/esper-server", "remote": "esper-server" },
+    { "local": "server/src/schema.surql", "remote": "schema.surql" },
+    { "local": "setup.sh", "remote": "setup.sh" }
+  ],
+  "remoteSetupSteps": [
+    { "name": "Initialize Environment & SurrealDB Schema", "command": "bash setup.sh" }
   ],
   "sharedFiles": [".env", "uploads"],
   "restartCommand": "sudo systemctl restart esper-server && sudo systemctl reload caddy",
@@ -94,6 +100,36 @@ Place in the root of any deployable project:
 ```
 
 `serverId` is filled in by the desktop client when you pick the target VPS.
+
+Use a loopback `healthUrl` (`http://127.0.0.1:<port>/...`) so the
+verify step probes over SSH on the VPS itself. Public URLs are probed
+from the desktop instead.
+
+## Backend-only + Cloudflare Pages split
+
+Skiff ships whatever `buildSteps` + `artifacts` you declare — so a
+backend-only deploy is just a recipe with no frontend build and no
+`dist → public` artifact (see `skiff.json` above). The VPS then only
+runs the API; static assets live on Cloudflare Pages.
+
+1. **Skiff recipe:** keep only the backend build (e.g. `cargo build`),
+   ship only the binary + `schema.surql` + `setup.sh`. Set `domain` to
+   the API host (`api.esper.yourdomain.com`), `targetPort: 8080`,
+   `healthUrl: http://127.0.0.1:8080/api/health`.
+2. **Backend:** drop the `ServeDir("public")` fallback (return JSON 404
+   for non-`/api` routes), keep CORS open for the Pages origin
+   (including custom headers like `x-guest-token`), and set `BASE_URL`
+   in the VPS shared `.env` to `https://api.esper.yourdomain.com` so
+   `/uploads/*` URLs resolve to the API domain.
+3. **Cloudflare Pages:** framework `Vite`, build `npm run build`,
+   output `dist`, env `VITE_WORKER_URL=https://api.esper.yourdomain.com`
+   (+ `VITE_CLERK_PUBLISHABLE_KEY`), SPA fallback via `public/_redirects`
+   containing `/* /index.html 200`.
+4. **DNS:** frontend `esper.yourdomain.com` → Pages (CNAME to
+   `<project>.pages.dev`); backend `api.esper.yourdomain.com` → A record
+   to VPS IP (Skiff + Caddy own TLS). If orange-cloud proxied, use
+   Cloudflare SSL mode Full/Strict; otherwise DNS-only and let Caddy do
+   Let's Encrypt.
 
 ## License
 
