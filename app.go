@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -23,10 +24,21 @@ import (
 	"skiff/pkg/store"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/crypto/ssh"
 )
 
 var versionRegexp = regexp.MustCompile(`[0-9]+\.[0-9]+(\.[0-9]+)?`)
 var releaseIDRegexp = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+type ExecCommandResult struct {
+	Command    string `json:"command"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+	Combined   string `json:"combined"`
+	ExitCode   int    `json:"exitCode"`
+	DurationMs int64  `json:"durationMs"`
+	Error      string `json:"error,omitempty"`
+}
 
 type ServiceStatus struct {
 	Name    string `json:"name"`
@@ -68,15 +80,20 @@ type ReleaseInfo struct {
 }
 
 type App struct {
-	ctx      context.Context
-	store    *store.Manager
-	pipeline *deployer.Pipeline
-	stopLog  chan struct{}
+	ctx           context.Context
+	store         *store.Manager
+	pipeline      *deployer.Pipeline
+	stopLog       chan struct{}
+	activeExecMu  sync.Mutex
+	activeExecMap map[string]*ssh.Session
 }
 
 func NewApp() *App {
 	mgr, _ := store.NewManager()
-	return &App{store: mgr}
+	return &App{
+		store:         mgr,
+		activeExecMap: make(map[string]*ssh.Session),
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -84,6 +101,143 @@ func (a *App) startup(ctx context.Context) {
 	a.pipeline = deployer.NewPipeline(a.store, func(event string, data any) {
 		runtime.EventsEmit(a.ctx, event, data)
 	})
+}
+
+// ----------------- VPS Command Execution (Lag-Free Terminal) -----------------
+
+func (a *App) ExecuteServerCommand(serverID, command, workingDir, execID string) (*ExecCommandResult, error) {
+	cmdText := strings.TrimSpace(command)
+	if cmdText == "" {
+		return nil, fmt.Errorf("empty command")
+	}
+	if execID == "" {
+		execID = fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	}
+
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return nil, fmt.Errorf("ssh connection failed: %w", err)
+	}
+	defer client.Close()
+
+	session, err := client.GetRawSSHClient().NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed creating ssh session: %w", err)
+	}
+	defer session.Close()
+
+	a.activeExecMu.Lock()
+	if a.activeExecMap == nil {
+		a.activeExecMap = make(map[string]*ssh.Session)
+	}
+	a.activeExecMap[execID] = session
+	a.activeExecMu.Unlock()
+
+	defer func() {
+		a.activeExecMu.Lock()
+		delete(a.activeExecMap, execID)
+		a.activeExecMu.Unlock()
+	}()
+
+	var stdoutBuf, stderrBuf, combinedBuf bytes.Buffer
+	var mu sync.Mutex
+
+	stdoutPipe, err := session.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderrPipe, err := session.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	fullCmd := cmdText
+	cleanDir := strings.TrimSpace(workingDir)
+	if cleanDir != "" && cleanDir != "/" && cleanDir != "." {
+		fullCmd = fmt.Sprintf("cd %s && %s", shellSingleQuote(cleanDir), cmdText)
+	}
+
+	start := time.Now()
+
+	if err := session.Start(fullCmd); err != nil {
+		return nil, fmt.Errorf("failed starting command: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	copyAndStream := func(r io.Reader, targetBuf *bytes.Buffer, streamType string) {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, rerr := r.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				mu.Lock()
+				targetBuf.WriteString(chunk)
+				combinedBuf.WriteString(chunk)
+				mu.Unlock()
+
+				if a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "terminal:stream", map[string]any{
+						"execId": execID,
+						"type":   streamType,
+						"chunk":  chunk,
+					})
+				}
+			}
+			if rerr != nil {
+				break
+			}
+		}
+	}
+
+	go copyAndStream(stdoutPipe, &stdoutBuf, "stdout")
+	go copyAndStream(stderrPipe, &stderrBuf, "stderr")
+
+	waitErr := session.Wait()
+	wg.Wait()
+	durationMs := time.Since(start).Milliseconds()
+
+	exitCode := 0
+	errMsg := ""
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*ssh.ExitError); ok {
+			exitCode = exitErr.ExitStatus()
+		} else {
+			exitCode = -1
+			errMsg = waitErr.Error()
+		}
+	}
+
+	return &ExecCommandResult{
+		Command:    cmdText,
+		Stdout:     stdoutBuf.String(),
+		Stderr:     stderrBuf.String(),
+		Combined:   combinedBuf.String(),
+		ExitCode:   exitCode,
+		DurationMs: durationMs,
+		Error:      errMsg,
+	}, nil
+}
+
+func (a *App) CancelServerCommand(execID string) error {
+	a.activeExecMu.Lock()
+	session, exists := a.activeExecMap[execID]
+	a.activeExecMu.Unlock()
+
+	if !exists || session == nil {
+		return fmt.Errorf("no active command found with id: %s", execID)
+	}
+
+	_ = session.Signal(sshclient.SigINT())
+	_ = session.Close()
+	return nil
 }
 
 // ----------------- Native OS Dialogs & Config Discovery -----------------

@@ -226,6 +226,30 @@ export namespace main {
 	    }
 	}
 	
+	export class ExecCommandResult {
+	    command: string;
+	    stdout: string;
+	    stderr: string;
+	    combined: string;
+	    exitCode: number;
+	    durationMs: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExecCommandResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.command = source["command"];
+	        this.stdout = source["stdout"];
+	        this.stderr = source["stderr"];
+	        this.combined = source["combined"];
+	        this.exitCode = source["exitCode"];
+	        this.durationMs = source["durationMs"];
+	        this.error = source["error"];
+	    }
+	}
 	export class ProjectDeploymentStatus {
 	    isDeployed: boolean;
 	    currentRelease: string;

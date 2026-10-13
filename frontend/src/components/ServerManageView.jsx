@@ -13,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Terminal,
 } from "lucide-react";
 
 const DB_SERVICE_TYPES = ["surrealdb", "postgres", "postgresql", "mysql", "mariadb"];
@@ -33,6 +34,8 @@ export default function ServerManageView({
   server,
   onBack,
   onOpenDeployments,
+  onOpenTerminal,
+  onOpenTerminalWithDir,
   onSelectAppForDeployments,
   onSelectAppForEnv,
   onOpenBootstrap,
@@ -115,6 +118,14 @@ export default function ServerManageView({
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={onOpenTerminal}
+            className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs flex items-center gap-1.5 transition"
+            title="Open Lag-Free VPS Terminal"
+          >
+            <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Terminal</span>
+          </button>
           <button
             onClick={onProbe}
             disabled={probing}
@@ -244,6 +255,13 @@ export default function ServerManageView({
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => onOpenTerminalWithDir && onOpenTerminalWithDir(app.path)}
+                        className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition"
+                        title={`Open Terminal in ${app.path}`}
+                      >
+                        <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                      </button>
                       <button
                         onClick={() => onSelectAppForEnv && onSelectAppForEnv(app.name)}
                         className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition"

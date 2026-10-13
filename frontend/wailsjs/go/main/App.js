@@ -22,6 +22,10 @@ export function CancelBootstrap() {
   return window['go']['main']['App']['CancelBootstrap']();
 }
 
+export function CancelServerCommand(arg1) {
+  return window['go']['main']['App']['CancelServerCommand'](arg1);
+}
+
 export function CheckDomainDNS(arg1, arg2) {
   return window['go']['main']['App']['CheckDomainDNS'](arg1, arg2);
 }
@@ -52,6 +56,10 @@ export function DeleteServer(arg1) {
 
 export function DeployProject(arg1) {
   return window['go']['main']['App']['DeployProject'](arg1);
+}
+
+export function ExecuteServerCommand(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ExecuteServerCommand'](arg1, arg2, arg3, arg4);
 }
 
 export function GetAppDomainConfig(arg1, arg2) {

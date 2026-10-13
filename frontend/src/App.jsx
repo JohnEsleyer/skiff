@@ -32,6 +32,7 @@ import DatabaseManageModal from "./components/DatabaseManageModal.jsx";
 import DeployDomainSection from "./components/DeployDomainSection.jsx";
 import DeployEnvSection from "./components/DeployEnvSection.jsx";
 import ServerManageView from "./components/ServerManageView.jsx";
+import TerminalView from "./components/TerminalView.jsx";
 import CustomSelect from "./components/CustomSelect.jsx";
 
 export default function App() {
@@ -41,6 +42,7 @@ export default function App() {
 
   const [projects, setProjects] = useState([]);
   const [activeProject, setActiveProject] = useState(null);
+  const [terminalInitialDir, setTerminalInitialDir] = useState("/");
 
   // Live Deploy Pipeline
   const [deployLogs, setDeployLogs] = useState([]);
@@ -327,6 +329,11 @@ export default function App() {
   const handleSelectServerCard = (srv) => {
     setSelectedServer(srv);
     setActiveView("manage");
+  };
+
+  const handleOpenTerminalWithDir = (dir) => {
+    setTerminalInitialDir(dir || "/");
+    setActiveView("terminal");
   };
 
   const handleTestConnection = async (srv) => {
@@ -707,6 +714,18 @@ export default function App() {
             3. Deployments
           </button>
           <button
+            onClick={() => selectedServer && setActiveView("terminal")}
+            disabled={!selectedServer}
+            className={`px-3 py-1.5 rounded-lg font-semibold transition flex items-center gap-1.5 ${
+              activeView === "terminal"
+                ? "bg-indigo-600 text-white"
+                : "text-slate-400 hover:text-white disabled:opacity-30"
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            <span>4. Terminal</span>
+          </button>
+          <button
             onClick={() => {
               setActiveView("logs");
               handleStartLogs();
@@ -843,6 +862,8 @@ export default function App() {
             server={selectedServer}
             onBack={() => setActiveView("servers")}
             onOpenDeployments={() => setActiveView("deployments")}
+            onOpenTerminal={() => handleOpenTerminalWithDir("/")}
+            onOpenTerminalWithDir={handleOpenTerminalWithDir}
             onSelectAppForDeployments={handleSelectAppFromManage}
             onSelectAppForEnv={handleSelectAppForEnv}
             onOpenBootstrap={() => handleBootstrapPrompt(selectedServer)}
@@ -1482,7 +1503,16 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 4: REMOTE LOGS */}
+        {/* VIEW 4: LAG-FREE TERMINAL COMMAND RUNNER */}
+        {activeView === "terminal" && selectedServer && (
+          <TerminalView
+            server={selectedServer}
+            initialDir={terminalInitialDir}
+            addToast={addToast}
+          />
+        )}
+
+        {/* VIEW 5: REMOTE LOGS */}
         {activeView === "logs" && (
           <div className="flex-1 flex flex-col p-6 space-y-3 bg-black">
             <div className="flex items-center justify-between text-slate-400 border-b border-slate-800 pb-2">

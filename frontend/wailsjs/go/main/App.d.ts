@@ -15,6 +15,8 @@ export function BootstrapVPSWithStack(arg1:string,arg2:bootstrap.StackConfig):Pr
 
 export function CancelBootstrap():Promise<void>;
 
+export function CancelServerCommand(arg1:string):Promise<void>;
+
 export function CheckDomainDNS(arg1:string,arg2:string):Promise<main.DNSCheckResult>;
 
 export function ConfigureAppDomain(arg1:string,arg2:string,arg3:string,arg4:number,arg5:string):Promise<void>;
@@ -30,6 +32,8 @@ export function DeleteProjectDeployment(arg1:string,arg2:string,arg3:string,arg4
 export function DeleteServer(arg1:string):Promise<void>;
 
 export function DeployProject(arg1:string):Promise<void>;
+
+export function ExecuteServerCommand(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ExecCommandResult>;
 
 export function GetAppDomainConfig(arg1:string,arg2:string):Promise<main.DomainRouteConfig>;
 
