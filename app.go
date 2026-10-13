@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"skiff/pkg/bootstrap"
@@ -792,6 +794,547 @@ func (a *App) RemoveAppDomain(serverID, appName string) error {
 		sanitizeAppName(appName))
 	_, err = client.RunCommand(cmd)
 	return err
+}
+
+// ----------------- Environment (.env) Management -----------------
+
+type EnvCredentialChip struct {
+	Source string `json:"source"`
+	Label  string `json:"label"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+}
+
+type AppEnvInfo struct {
+	Exists      bool                `json:"exists"`
+	Content     string              `json:"content"`
+	ModifiedAt  string              `json:"modifiedAt,omitempty"`
+	Credentials []EnvCredentialChip `json:"credentials"`
+}
+
+// validateAppEnvDir confines env read/write to a single app directory directly
+// under /opt/skiff/apps and rejects traversal attempts.
+func validateAppEnvDir(appDir string) (string, error) {
+	clean := filepath.Clean(strings.TrimSpace(appDir))
+	if !strings.HasPrefix(clean, "/opt/skiff/apps/") {
+		return "", fmt.Errorf("refusing to touch .env outside /opt/skiff/apps")
+	}
+	rest := strings.TrimPrefix(clean, "/opt/skiff/apps/")
+	if rest == "" || !releaseIDRegexp.MatchString(rest) {
+		return "", fmt.Errorf("invalid app directory: %q", appDir)
+	}
+	return clean, nil
+}
+
+func appServiceSlug(appDir, appName string) string {
+	if appDir != "" {
+		clean := filepath.Clean(appDir)
+		if base := filepath.Base(clean); base != "" && base != "." && base != "/" {
+			return sanitizeAppName(base)
+		}
+	}
+	return sanitizeAppName(appName)
+}
+
+// discoverEnvCredentials reads provisioned data-engine info files and builds
+// one-click insertion chips (endpoints, users, passwords, ports).
+func discoverEnvCredentials(client *sshclient.Client) []EnvCredentialChip {
+	chips := make([]EnvCredentialChip, 0)
+	engines := []struct {
+		source string
+		paths  []string
+	}{
+		{"surrealdb", []string{"surrealdb"}},
+		{"postgres", []string{"postgres", "postgresql"}},
+		{"mysql", []string{"mysql", "mariadb"}},
+	}
+	for _, eng := range engines {
+		for _, p := range eng.paths {
+			raw, err := client.RunCommand(fmt.Sprintf("cat /opt/skiff/data/%s/info.json 2>/dev/null || echo ''", p))
+			if err != nil || strings.TrimSpace(raw) == "" {
+				continue
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+				continue
+			}
+			str := func(k string) string {
+				if v, ok := parsed[k].(string); ok {
+					return v
+				}
+				return ""
+			}
+			port := 0
+			if f, ok := parsed["port"].(float64); ok {
+				port = int(f)
+			}
+			user, pass := str("user"), str("password")
+			ns, db := str("namespace"), str("database")
+			switch eng.source {
+			case "surrealdb":
+				if port == 0 {
+					port = 8000
+				}
+				chips = append(chips,
+					EnvCredentialChip{Source: "surrealdb", Label: "SurrealDB endpoint", Key: "SURREAL_ENDPOINT", Value: fmt.Sprintf("http://127.0.0.1:%d", port)},
+					EnvCredentialChip{Source: "surrealdb", Label: "SurrealDB user", Key: "SURREAL_USER", Value: user},
+					EnvCredentialChip{Source: "surrealdb", Label: "SurrealDB password", Key: "SURREAL_PASS", Value: pass},
+				)
+				if ns != "" {
+					chips = append(chips, EnvCredentialChip{Source: "surrealdb", Label: "SurrealDB namespace", Key: "SURREAL_NS", Value: ns})
+				}
+				if db != "" {
+					chips = append(chips, EnvCredentialChip{Source: "surrealdb", Label: "SurrealDB database", Key: "SURREAL_DB", Value: db})
+				}
+			case "postgres":
+				if port == 0 {
+					port = 5432
+				}
+				if db == "" {
+					db = "postgres"
+				}
+				chips = append(chips,
+					EnvCredentialChip{Source: "postgres", Label: "Postgres URL", Key: "DATABASE_URL", Value: fmt.Sprintf("postgresql://%s:%s@127.0.0.1:%d/%s?sslmode=disable", user, pass, port, db)},
+					EnvCredentialChip{Source: "postgres", Label: "Postgres user", Key: "PGUSER", Value: user},
+					EnvCredentialChip{Source: "postgres", Label: "Postgres password", Key: "PGPASSWORD", Value: pass},
+					EnvCredentialChip{Source: "postgres", Label: "Postgres port", Key: "PGPORT", Value: fmt.Sprintf("%d", port)},
+				)
+			case "mysql":
+				if port == 0 {
+					port = 3306
+				}
+				if db == "" {
+					db = "mysql"
+				}
+				chips = append(chips,
+					EnvCredentialChip{Source: "mysql", Label: "MySQL URL", Key: "DATABASE_URL", Value: fmt.Sprintf("mysql://%s:%s@127.0.0.1:%d/%s", user, pass, port, db)},
+					EnvCredentialChip{Source: "mysql", Label: "MySQL user", Key: "MYSQL_USER", Value: user},
+					EnvCredentialChip{Source: "mysql", Label: "MySQL password", Key: "MYSQL_PASSWORD", Value: pass},
+					EnvCredentialChip{Source: "mysql", Label: "MySQL port", Key: "MYSQL_PORT", Value: fmt.Sprintf("%d", port)},
+				)
+			}
+			break
+		}
+	}
+	return chips
+}
+
+// GetAppEnv reads /opt/skiff/apps/<app>/shared/.env over SSH using
+// binary-safe base64 transport and returns it with discovered stack credentials.
+func (a *App) GetAppEnv(serverID, appDir, appName string) (*AppEnvInfo, error) {
+	cleanDir, err := validateAppEnvDir(appDir)
+	if err != nil {
+		return nil, err
+	}
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	info := &AppEnvInfo{Credentials: make([]EnvCredentialChip, 0)}
+	_ = appName
+
+	out, err := client.RunCommand(fmt.Sprintf(
+		"if [ -f %s ]; then stat -c '%%y' %s; base64 -w0 %s 2>/dev/null || base64 %s | tr -d '\\n'; echo; else echo 'SKIFF_NOENV'; fi",
+		shellSingleQuote(cleanDir+"/shared/.env"),
+		shellSingleQuote(cleanDir+"/shared/.env"),
+		shellSingleQuote(cleanDir+"/shared/.env"),
+		shellSingleQuote(cleanDir+"/shared/.env")))
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "SKIFF_NOENV" {
+		info.Credentials = discoverEnvCredentials(client)
+		return info, nil
+	}
+	if len(lines) >= 1 {
+		info.ModifiedAt = strings.TrimSpace(lines[0])
+	}
+	if len(lines) >= 2 {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(lines[1]))
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode remote .env: %w", err)
+		}
+		info.Exists = true
+		info.Content = string(decoded)
+	}
+	info.Credentials = discoverEnvCredentials(client)
+	return info, nil
+}
+
+// SaveAppEnv writes shared/.env with strict 0600 permissions, re-links it into
+// the active release, and optionally restarts the app systemd unit.
+func (a *App) SaveAppEnv(serverID, appDir, appName, content string, restartService bool) error {
+	cleanDir, err := validateAppEnvDir(appDir)
+	if err != nil {
+		return err
+	}
+	if len(content) > 512*1024 {
+		return fmt.Errorf("refusing to write .env larger than 512 KB")
+	}
+	if strings.ContainsRune(content, 0) {
+		return fmt.Errorf("refusing to write .env containing NUL bytes")
+	}
+	srv, err := a.store.GetServer(serverID)
+	if err != nil {
+		return err
+	}
+	client, err := sshclient.NewClient(*srv)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(content))
+	writeCmd := fmt.Sprintf("mkdir -p %s && echo '%s' | base64 -d > %s && chmod 600 %s && "+
+		"if [ -e %s ]; then ln -sfn %s %s; fi && echo SAVED",
+		shellSingleQuote(cleanDir+"/shared"),
+		encoded,
+		shellSingleQuote(cleanDir+"/shared/.env"),
+		shellSingleQuote(cleanDir+"/shared/.env"),
+		shellSingleQuote(cleanDir+"/current"),
+		shellSingleQuote(cleanDir+"/shared/.env"),
+		shellSingleQuote(cleanDir+"/current/.env"))
+	out, err := client.RunCommand(writeCmd)
+	if err != nil || !strings.Contains(out, "SAVED") {
+		return fmt.Errorf("failed to write remote .env: %w", err)
+	}
+
+	if restartService {
+		slug := appServiceSlug(cleanDir, appName)
+		if _, err := client.RunCommand(fmt.Sprintf("sudo systemctl restart %s", slug)); err != nil {
+			return fmt.Errorf(".env saved but service restart failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// GetLocalProjectEnv scans the local project directory for .env,
+// .env.production, or .env.example (first hit wins) for one-click imports.
+func (a *App) GetLocalProjectEnv(localPath string) (string, error) {
+	clean := filepath.Clean(strings.TrimSpace(localPath))
+	if clean == "" || clean == "." {
+		return "", fmt.Errorf("empty project path")
+	}
+	st, err := os.Stat(clean)
+	if err != nil || !st.IsDir() {
+		return "", fmt.Errorf("project directory not found")
+	}
+	for _, name := range []string{".env", ".env.production", ".env.example"} {
+		data, err := os.ReadFile(filepath.Join(clean, name))
+		if err != nil {
+			continue
+		}
+		if len(data) > 256*1024 {
+			return "", fmt.Errorf("%s exceeds 256 KB", name)
+		}
+		return string(data), nil
+	}
+	return "", fmt.Errorf("no .env, .env.production, or .env.example found in project")
+}
+
+// ----------------- Live Database Version Lookup -----------------
+//
+// Version lists are sourced live from upstream release endpoints so Skiff
+// never needs a code change when a new major ships. Unauthenticated GitHub
+// API calls are rate-limited (60/hr), so results are cached for an hour and
+// every engine has a baked-in fallback for offline use.
+
+type DatabaseVersionOption struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Recommended bool   `json:"recommended"`
+}
+
+// Overridable in tests.
+var githubAPIBase = "https://api.github.com"
+var pgdgPackagesURL = "https://apt.postgresql.org/pub/repos/apt/dists/noble-pgdg/main/binary-amd64/Packages"
+
+var versionCacheTTL = time.Hour
+
+var versionCache = struct {
+	sync.Mutex
+	entries map[string]versionCacheEntry
+}{entries: make(map[string]versionCacheEntry)}
+
+type versionCacheEntry struct {
+	fetched time.Time
+	options []DatabaseVersionOption
+}
+
+var stableSemverRegexp = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// semverParts splits "v3.3.0" into [3 3 0] for descending comparison.
+func semverParts(v string) []int {
+	out := make([]int, 0, 3)
+	for _, p := range strings.Split(strings.TrimPrefix(v, "v"), ".") {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func semverDesc(a, b string) bool {
+	pa, pb := semverParts(a), semverParts(b)
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		if pa[i] != pb[i] {
+			return pa[i] > pb[i]
+		}
+	}
+	return len(pa) > len(pb)
+}
+
+func sortSemverDesc(in []string) {
+	for i := 1; i < len(in); i++ {
+		for j := i; j > 0 && semverDesc(in[j], in[j-1]); j-- {
+			in[j], in[j-1] = in[j-1], in[j]
+		}
+	}
+}
+
+func fetchJSON(url string, out any) error {
+	client := &http.Client{Timeout: 12 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "skiff-deployer")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(out)
+}
+
+func fetchText(url string) (string, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "skiff-deployer")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func liveSurrealDBVersions() ([]DatabaseVersionOption, error) {
+	var releases []struct {
+		TagName    string `json:"tag_name"`
+		Prerelease bool   `json:"prerelease"`
+		Draft      bool   `json:"draft"`
+	}
+	if err := fetchJSON(githubAPIBase+"/repos/surrealdb/surrealdb/releases?per_page=60", &releases); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	stable := make([]string, 0)
+	for _, r := range releases {
+		if r.Prerelease || r.Draft || !stableSemverRegexp.MatchString(r.TagName) || seen[r.TagName] {
+			continue
+		}
+		seen[r.TagName] = true
+		stable = append(stable, r.TagName)
+	}
+	if len(stable) == 0 {
+		return nil, fmt.Errorf("no stable SurrealDB releases found upstream")
+	}
+	sortSemverDesc(stable)
+	if len(stable) > 12 {
+		stable = stable[:12]
+	}
+	opts := make([]DatabaseVersionOption, 0, len(stable))
+	for i, v := range stable {
+		label := v
+		if i == 0 {
+			label += " (Latest Stable)"
+		}
+		opts = append(opts, DatabaseVersionOption{Value: v, Label: label, Recommended: i == 0})
+	}
+	return opts, nil
+}
+
+func livePostgresVersions() ([]DatabaseVersionOption, error) {
+	body, err := fetchText(pgdgPackagesURL)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[int]bool)
+	majors := make([]int, 0)
+	for _, line := range strings.Split(body, "\n") {
+		// Exact match only: extension packages (postgresql-16-postgis-3,
+		// postgresql-client-16, ...) must not count as a major release.
+		m := pgdgPackageRegexp.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		if n > 0 && !seen[n] {
+			seen[n] = true
+			majors = append(majors, n)
+		}
+	}
+	if len(majors) == 0 {
+		return nil, fmt.Errorf("no installable PostgreSQL majors found in PGDG index")
+	}
+	for i := 1; i < len(majors); i++ {
+		for j := i; j > 0 && majors[j] > majors[j-1]; j-- {
+			majors[j], majors[j-1] = majors[j-1], majors[j]
+		}
+	}
+	if len(majors) > 5 {
+		majors = majors[:5]
+	}
+	opts := make([]DatabaseVersionOption, 0, len(majors))
+	for i, n := range majors {
+		v := strconv.Itoa(n)
+		label := "PostgreSQL " + v
+		if i == 0 {
+			label += " (Recommended)"
+		}
+		opts = append(opts, DatabaseVersionOption{Value: v, Label: label, Recommended: i == 0})
+	}
+	return opts, nil
+}
+
+var mariadbTagRegexp = regexp.MustCompile(`^mariadb-([0-9]+\.[0-9]+)\.[0-9]+$`)
+var pgdgPackageRegexp = regexp.MustCompile(`^Package: postgresql-([0-9]+)$`)
+
+func liveMariaDBVersions() ([]DatabaseVersionOption, error) {
+	var releases []struct {
+		TagName    string `json:"tag_name"`
+		Prerelease bool   `json:"prerelease"`
+		Draft      bool   `json:"draft"`
+	}
+	if err := fetchJSON(githubAPIBase+"/repos/MariaDB/server/releases?per_page=40", &releases); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	lines := make([]string, 0)
+	for _, r := range releases {
+		if r.Prerelease || r.Draft {
+			continue
+		}
+		m := mariadbTagRegexp.FindStringSubmatch(r.TagName)
+		if m == nil || seen[m[1]] {
+			continue
+		}
+		seen[m[1]] = true
+		lines = append(lines, m[1])
+	}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("no stable MariaDB release lines found upstream")
+	}
+	sortSemverDesc(lines)
+	if len(lines) > 8 {
+		lines = lines[:8]
+	}
+	// Prefer an 11.x LTS line for the recommendation; rolling majors churn.
+	recIdx := 0
+	for i, l := range lines {
+		if strings.HasPrefix(l, "11.") {
+			recIdx = i
+			break
+		}
+	}
+	opts := make([]DatabaseVersionOption, 0, len(lines))
+	for i, l := range lines {
+		label := "MariaDB " + l
+		if i == recIdx {
+			label += " (LTS)"
+		}
+		opts = append(opts, DatabaseVersionOption{Value: l, Label: label, Recommended: i == recIdx})
+	}
+	return opts, nil
+}
+
+func fallbackVersionOptions(engine string) []DatabaseVersionOption {
+	switch engine {
+	case "postgres":
+		return []DatabaseVersionOption{
+			{Value: "18", Label: "PostgreSQL 18 (Recommended)", Recommended: true},
+			{Value: "17", Label: "PostgreSQL 17"},
+			{Value: "16", Label: "PostgreSQL 16"},
+			{Value: "15", Label: "PostgreSQL 15"},
+			{Value: "14", Label: "PostgreSQL 14"},
+		}
+	case "mysql", "mariadb":
+		return []DatabaseVersionOption{
+			{Value: "11.8", Label: "MariaDB 11.8 (LTS)", Recommended: true},
+			{Value: "11.4", Label: "MariaDB 11.4 (LTS)"},
+			{Value: "10.11", Label: "MariaDB 10.11 (LTS)"},
+		}
+	default: // surrealdb
+		return []DatabaseVersionOption{
+			{Value: "v3.3.0", Label: "v3.3.0 (Latest Stable)", Recommended: true},
+			{Value: "v3.2.5", Label: "v3.2.5"},
+			{Value: "v3.1.6", Label: "v3.1.6"},
+			{Value: "v2.7.0", Label: "v2.7.0"},
+			{Value: "v2.2.1", Label: "v2.2.1"},
+		}
+	}
+}
+
+// GetDatabaseVersions returns installable version options for a stack engine,
+// sourced live from upstream release endpoints with an hour-long cache and a
+// baked-in fallback when offline or rate-limited.
+func (a *App) GetDatabaseVersions(engine string) ([]DatabaseVersionOption, error) {
+	eng := strings.ToLower(strings.TrimSpace(engine))
+	if eng == "mariadb" {
+		eng = "mysql"
+	}
+
+	versionCache.Lock()
+	if e, ok := versionCache.entries[eng]; ok && time.Since(e.fetched) < versionCacheTTL {
+		opts := e.options
+		versionCache.Unlock()
+		return opts, nil
+	}
+	versionCache.Unlock()
+
+	var opts []DatabaseVersionOption
+	var err error
+	switch eng {
+	case "postgres":
+		opts, err = livePostgresVersions()
+	case "mysql":
+		opts, err = liveMariaDBVersions()
+	default:
+		opts, err = liveSurrealDBVersions()
+	}
+	if err != nil || len(opts) == 0 {
+		opts = fallbackVersionOptions(eng)
+		return opts, nil
+	}
+
+	versionCache.Lock()
+	versionCache.entries[eng] = versionCacheEntry{fetched: time.Now(), options: opts}
+	versionCache.Unlock()
+	return opts, nil
 }
 
 // OpenURL opens a URL in the OS default browser. Plain <a target="_blank">

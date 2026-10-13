@@ -17,13 +17,16 @@ const STACK_PRESETS = [
     title: "SurrealDB Engine (Multi-Tenant + Caddy + Swap)",
     desc: "Clean-slate SurrealDB with selectable storage backend, Caddy reverse proxy, and 1.5GB swap.",
     engine: "SurrealDB",
+    // Static fallback — replaced by live upstream versions (GitHub releases)
+    // whenever reachable. Keep roughly current for offline use.
     versions: [
-      { value: "v2.2.1", label: "v2.2.1 (Latest Stable)" },
-      { value: "v2.1.4", label: "v2.1.4" },
-      { value: "v2.0.4", label: "v2.0.4" },
-      { value: "v1.5.4", label: "v1.5.4 (Legacy v1)" },
+      { value: "v3.3.0", label: "v3.3.0 (Latest Stable)" },
+      { value: "v3.2.5", label: "v3.2.5" },
+      { value: "v3.1.6", label: "v3.1.6" },
+      { value: "v2.7.0", label: "v2.7.0" },
+      { value: "v2.2.1", label: "v2.2.1" },
     ],
-    defaultVersion: "v2.2.1",
+    defaultVersion: "v3.3.0",
   },
   {
     id: "postgres",
@@ -31,11 +34,13 @@ const STACK_PRESETS = [
     desc: "PostgreSQL tuned for low-memory VPS environments with Caddy.",
     engine: "PostgreSQL",
     versions: [
-      { value: "16", label: "PostgreSQL 16 (Recommended)" },
+      { value: "18", label: "PostgreSQL 18 (Recommended)" },
+      { value: "17", label: "PostgreSQL 17" },
+      { value: "16", label: "PostgreSQL 16" },
       { value: "15", label: "PostgreSQL 15" },
       { value: "14", label: "PostgreSQL 14" },
     ],
-    defaultVersion: "16",
+    defaultVersion: "18",
   },
   {
     id: "mysql",
@@ -43,10 +48,11 @@ const STACK_PRESETS = [
     desc: "MariaDB with low-memory InnoDB configuration and Caddy.",
     engine: "MariaDB",
     versions: [
+      { value: "11.8", label: "MariaDB 11.8 (LTS)" },
+      { value: "11.4", label: "MariaDB 11.4 (LTS)" },
       { value: "10.11", label: "MariaDB 10.11 (LTS)" },
-      { value: "11.4", label: "MariaDB 11.4 (Latest)" },
     ],
-    defaultVersion: "10.11",
+    defaultVersion: "11.8",
   },
   {
     id: "base",
@@ -83,13 +89,16 @@ export default function BootstrapModal({
   onCancel,
 }) {
   const [selectedPreset, setSelectedPreset] = useState("surrealdb");
-  const [selectedVersion, setSelectedVersion] = useState("v2.2.1");
+  const [selectedVersion, setSelectedVersion] = useState("v3.3.0");
   const [dbUser, setDbUser] = useState("admin");
   const [dbPassword, setDbPassword] = useState("");
   const [dbName, setDbName] = useState("");
   const [surrealStorage, setSurrealStorage] = useState("surrealkv");
   const [formError, setFormError] = useState("");
   const [copied, setCopied] = useState(false);
+  // Live upstream versions per preset id, fetched when the modal opens.
+  const [liveVersions, setLiveVersions] = useState({});
+  const [versionsLoading, setVersionsLoading] = useState(false);
 
   const logContainerRef = useRef(null);
 
@@ -98,12 +107,46 @@ export default function BootstrapModal({
   useEffect(() => {
     if (isOpen && status === "idle") {
       setSelectedPreset("surrealdb");
-      setSelectedVersion("v2.2.1");
+      setSelectedVersion("v3.3.0");
       setDbUser("admin");
       setDbPassword(generateStrongPassword());
       setDbName("");
       setFormError("");
     }
+  }, [isOpen, status]);
+
+  // Resolve live version lists from upstream release endpoints once per open.
+  // The Go backend caches for an hour and falls back to baked-in lists when
+  // offline, so this never blocks provisioning.
+  useEffect(() => {
+    if (!isOpen || status !== "idle" || !window.go?.main?.App) return;
+    let cancelled = false;
+    setVersionsLoading(true);
+    (async () => {
+      const next = {};
+      for (const preset of STACK_PRESETS) {
+        if (preset.id === "base") continue;
+        try {
+          const opts = await window.go.main.App.GetDatabaseVersions(preset.id);
+          if (cancelled || !Array.isArray(opts) || opts.length === 0) continue;
+          next[preset.id] = opts.map((o) => ({ value: o.value, label: o.label }));
+          if (preset.id === selectedPreset) {
+            const rec = opts.find((o) => o.recommended) || opts[0];
+            if (rec) setSelectedVersion(rec.value);
+          }
+        } catch {
+          // Keep the static fallback list for this engine.
+        }
+      }
+      if (!cancelled) {
+        setLiveVersions(next);
+        setVersionsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, status]);
 
   useEffect(() => {
@@ -115,9 +158,16 @@ export default function BootstrapModal({
   if (!isOpen) return null;
 
   const activePreset = STACK_PRESETS.find((p) => p.id === selectedPreset);
+  const versionOptions = liveVersions[selectedPreset] || activePreset?.versions || [];
+  const usingLiveVersions = !!liveVersions[selectedPreset];
 
   const handlePresetSelect = (id) => {
     setSelectedPreset(id);
+    const live = liveVersions[id];
+    if (live && live.length > 0) {
+      setSelectedVersion(live[0].value);
+      return;
+    }
     const preset = STACK_PRESETS.find((p) => p.id === id);
     setSelectedVersion(preset?.defaultVersion || "");
   };
@@ -250,11 +300,22 @@ export default function BootstrapModal({
 
                 <div className={`grid gap-3 ${selectedPreset === "surrealdb" ? "grid-cols-3" : "grid-cols-2"}`}>
                   <div>
-                    <label className="text-[10px] font-mono text-slate-500 block mb-1">Service Version</label>
+                    <label className="text-[10px] font-mono text-slate-500 block mb-1">
+                      Service Version{" "}
+                      {versionsLoading ? (
+                        <span className="text-indigo-300">(checking upstream…)</span>
+                      ) : usingLiveVersions ? (
+                        <span className="text-emerald-400">(live upstream)</span>
+                      ) : (
+                        selectedPreset !== "base" && (
+                          <span className="text-amber-400">(offline list)</span>
+                        )
+                      )}
+                    </label>
                     <CustomSelect
                       value={selectedVersion}
                       onChange={setSelectedVersion}
-                      options={activePreset?.versions || []}
+                      options={versionOptions}
                       placeholder="Select version..."
                     />
                   </div>

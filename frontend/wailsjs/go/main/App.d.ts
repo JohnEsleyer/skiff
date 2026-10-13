@@ -33,9 +33,15 @@ export function DeployProject(arg1:string):Promise<void>;
 
 export function GetAppDomainConfig(arg1:string,arg2:string):Promise<main.DomainRouteConfig>;
 
+export function GetAppEnv(arg1:string,arg2:string,arg3:string):Promise<main.AppEnvInfo>;
+
 export function GetAppReleases(arg1:string,arg2:string):Promise<Array<main.ReleaseInfo>>;
 
 export function GetDatabaseInfo(arg1:string,arg2:string):Promise<main.DatabaseInfo>;
+
+export function GetDatabaseVersions(arg1:string):Promise<Array<main.DatabaseVersionOption>>;
+
+export function GetLocalProjectEnv(arg1:string):Promise<string>;
 
 export function GetProjectDeploymentStatus(arg1:string,arg2:string,arg3:string):Promise<main.ProjectDeploymentStatus>;
 
@@ -56,6 +62,8 @@ export function RemoveAppDomain(arg1:string,arg2:string):Promise<void>;
 export function ResetVPS(arg1:string):Promise<void>;
 
 export function RollbackProject(arg1:string):Promise<void>;
+
+export function SaveAppEnv(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<void>;
 
 export function SaveProject(arg1:store.ProjectConfig):Promise<void>;
 

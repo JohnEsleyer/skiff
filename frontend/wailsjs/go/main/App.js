@@ -58,12 +58,24 @@ export function GetAppDomainConfig(arg1, arg2) {
   return window['go']['main']['App']['GetAppDomainConfig'](arg1, arg2);
 }
 
+export function GetAppEnv(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetAppEnv'](arg1, arg2, arg3);
+}
+
 export function GetAppReleases(arg1, arg2) {
   return window['go']['main']['App']['GetAppReleases'](arg1, arg2);
 }
 
 export function GetDatabaseInfo(arg1, arg2) {
   return window['go']['main']['App']['GetDatabaseInfo'](arg1, arg2);
+}
+
+export function GetDatabaseVersions(arg1) {
+  return window['go']['main']['App']['GetDatabaseVersions'](arg1);
+}
+
+export function GetLocalProjectEnv(arg1) {
+  return window['go']['main']['App']['GetLocalProjectEnv'](arg1);
 }
 
 export function GetProjectDeploymentStatus(arg1, arg2, arg3) {
@@ -104,6 +116,10 @@ export function ResetVPS(arg1) {
 
 export function RollbackProject(arg1) {
   return window['go']['main']['App']['RollbackProject'](arg1);
+}
+
+export function SaveAppEnv(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SaveAppEnv'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SaveProject(arg1) {

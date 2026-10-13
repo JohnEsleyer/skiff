@@ -15,7 +15,7 @@ import (
 // StackConfig selects which purpose-built stack to provision.
 type StackConfig struct {
 	StackType      string `json:"stackType"` // "surrealdb" | "postgres" | "mysql" | "base"
-	Version        string `json:"version"`   // e.g. "v2.2.1", "16", "10.11" (preset default when empty)
+	Version        string `json:"version"`   // e.g. "v3.3.0", "16", "10.11" (preset default when empty)
 	DbUser         string `json:"dbUser"`
 	DbPassword     string `json:"dbPassword"`
 	DbName         string `json:"dbName"`
@@ -37,10 +37,12 @@ func GeneratePassword() string {
 // DefaultStackConfig provisions a clean-slate SurrealDB engine + Caddy + swap.
 // The database starts with NO pre-baked namespaces; each deployed app creates
 // its own via its recipe's remote setup steps.
+// NOTE: this default is only a fallback — the UI resolves live versions via
+// GetDatabaseVersions (upstream release endpoints) at bootstrap time.
 func DefaultStackConfig() StackConfig {
 	return StackConfig{
 		StackType:      "surrealdb",
-		Version:        "v2.2.1",
+		Version:        "v3.3.0",
 		DbUser:         "admin",
 		DbPassword:     GeneratePassword(),
 		DbName:         "",
@@ -161,7 +163,7 @@ systemctl enable --now caddy 2>/dev/null || true
 		}
 		version := strings.TrimSpace(cfg.Version)
 		if version == "" || version == "latest" {
-			version = "v2.2.1"
+			version = "v3.3.0"
 		}
 		// Compare without the leading "v": `surreal version` prints "2.2.1".
 		wantVer := strings.TrimPrefix(version, "v")

@@ -7,6 +7,7 @@ import {
   Copy,
   Edit2,
   ExternalLink,
+  FileKey2,
   Globe,
   Layers,
   Play,
@@ -29,6 +30,7 @@ import BootstrapModal from "./components/BootstrapModal.jsx";
 import ResetVPSModal from "./components/ResetVPSModal.jsx";
 import DatabaseManageModal from "./components/DatabaseManageModal.jsx";
 import DeployDomainSection from "./components/DeployDomainSection.jsx";
+import DeployEnvSection from "./components/DeployEnvSection.jsx";
 import ServerManageView from "./components/ServerManageView.jsx";
 import CustomSelect from "./components/CustomSelect.jsx";
 
@@ -556,9 +558,33 @@ export default function App() {
     if (match) {
       setActiveProject(match);
     }
+    setManageEnvTarget(null);
     setActiveView("deployments");
     setDeployCockpitTab("domain");
   };
+
+  // Jump target for the ".env" shortcut on Manage-VPS app cards when no local
+  // recipe matches the remote app (env works off appDir alone).
+  const [manageEnvTarget, setManageEnvTarget] = useState(null);
+
+  const handleSelectAppForEnv = (appName) => {
+    const match = projects.find(
+      (p) =>
+        (p.appDir || "").split("/").filter(Boolean).pop() === appName ||
+        p.name.toLowerCase() === appName.toLowerCase()
+    );
+    if (match) {
+      setActiveProject(match);
+      setManageEnvTarget(null);
+    } else {
+      setActiveProject(null);
+      setManageEnvTarget(appName);
+    }
+    setActiveView("deployments");
+    setDeployCockpitTab("env");
+  };
+
+  const envFallbackAppDir = manageEnvTarget ? `/opt/skiff/apps/${manageEnvTarget}` : "";
 
   const filteredProjects = projects.filter(
     (p) => !selectedServer || p.serverId === selectedServer.id
@@ -818,6 +844,7 @@ export default function App() {
             onBack={() => setActiveView("servers")}
             onOpenDeployments={() => setActiveView("deployments")}
             onSelectAppForDeployments={handleSelectAppFromManage}
+            onSelectAppForEnv={handleSelectAppForEnv}
             onOpenBootstrap={() => handleBootstrapPrompt(selectedServer)}
             onOpenDatabaseModal={handleOpenDatabaseModal}
             onOpenResetModal={() => handleOpenReset(selectedServer)}
@@ -853,7 +880,10 @@ export default function App() {
                   {filteredProjects.map((p) => (
                     <button
                       key={p.id}
-                      onClick={() => setActiveProject(p)}
+                      onClick={() => {
+                        setActiveProject(p);
+                        setManageEnvTarget(null);
+                      }}
                       className={`w-full text-left p-2.5 rounded-xl border transition ${
                         activeProject?.id === p.id
                           ? "bg-indigo-950/60 border-indigo-500/60 text-white font-semibold"
@@ -1353,6 +1383,17 @@ export default function App() {
                             <span>Domain &amp; SSL Routing</span>
                           </button>
                           <button
+                            onClick={() => setDeployCockpitTab("env")}
+                            className={`px-3 py-1 rounded-lg font-semibold text-xs flex items-center gap-1.5 transition ${
+                              deployCockpitTab === "env"
+                                ? "bg-indigo-600 text-white"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            <FileKey2 className="w-3 h-3" />
+                            <span>Environment (.env)</span>
+                          </button>
+                          <button
                             onClick={() => setDeployCockpitTab("terminal")}
                             className={`px-3 py-1 rounded-lg font-semibold text-xs flex items-center gap-1.5 transition ${
                               deployCockpitTab === "terminal"
@@ -1365,6 +1406,18 @@ export default function App() {
                           </button>
                         </div>
                       </div>
+
+                      {deployCockpitTab === "env" && (
+                        <div className="min-w-0">
+                          <DeployEnvSection
+                            server={selectedServer}
+                            appDir={activeProject?.appDir || ""}
+                            appName={activeAppSlug}
+                            localPath={activeProject?.localPath || ""}
+                            addToast={addToast}
+                          />
+                        </div>
+                      )}
 
                       {deployCockpitTab === "domain" && (
                         <div className="min-w-0">
@@ -1410,6 +1463,16 @@ export default function App() {
                     </div>
                   </div>
                 </>
+              ) : envFallbackAppDir ? (
+                <div className="min-w-0">
+                  <DeployEnvSection
+                    server={selectedServer}
+                    appDir={envFallbackAppDir}
+                    appName={manageEnvTarget}
+                    localPath=""
+                    addToast={addToast}
+                  />
+                </div>
               ) : (
                 <div className="flex-1 flex items-center justify-center text-slate-500">
                   Select a project recipe from the left panel.

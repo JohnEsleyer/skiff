@@ -6,6 +6,7 @@ import {
   Cpu,
   Database,
   ExternalLink,
+  FileKey2,
   Globe,
   HardDrive,
   Layers,
@@ -33,6 +34,7 @@ export default function ServerManageView({
   onBack,
   onOpenDeployments,
   onSelectAppForDeployments,
+  onSelectAppForEnv,
   onOpenBootstrap,
   onOpenDatabaseModal,
   onOpenResetModal,
@@ -242,6 +244,13 @@ export default function ServerManageView({
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => onSelectAppForEnv && onSelectAppForEnv(app.name)}
+                        className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition"
+                        title="Edit .env on VPS"
+                      >
+                        <FileKey2 className="w-3.5 h-3.5" />
+                      </button>
                       <button
                         onClick={() => handleControlService(app.name, "restart")}
                         disabled={busy}

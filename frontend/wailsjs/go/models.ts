@@ -31,6 +31,60 @@ export namespace bootstrap {
 
 export namespace main {
 	
+	export class EnvCredentialChip {
+	    source: string;
+	    label: string;
+	    key: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EnvCredentialChip(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source = source["source"];
+	        this.label = source["label"];
+	        this.key = source["key"];
+	        this.value = source["value"];
+	    }
+	}
+	export class AppEnvInfo {
+	    exists: boolean;
+	    content: string;
+	    modifiedAt?: string;
+	    credentials: EnvCredentialChip[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AppEnvInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.exists = source["exists"];
+	        this.content = source["content"];
+	        this.modifiedAt = source["modifiedAt"];
+	        this.credentials = this.convertValues(source["credentials"], EnvCredentialChip);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class DNSCheckResult {
 	    domain: string;
 	    serverIp: string;
@@ -89,6 +143,22 @@ export namespace main {
 	        this.connectionString = source["connectionString"];
 	        this.surrealistUri = source["surrealistUri"];
 	        this.active = source["active"];
+	    }
+	}
+	export class DatabaseVersionOption {
+	    value: string;
+	    label: string;
+	    recommended: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DatabaseVersionOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.value = source["value"];
+	        this.label = source["label"];
+	        this.recommended = source["recommended"];
 	    }
 	}
 	export class DeployedAppDetail {
@@ -155,6 +225,7 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	
 	export class ProjectDeploymentStatus {
 	    isDeployed: boolean;
 	    currentRelease: string;

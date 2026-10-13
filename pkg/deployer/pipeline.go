@@ -163,10 +163,20 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 			shellQuote(dbCreds.User), shellQuote(dbCreds.Password), dbCreds.Port,
 		)
 
+		// Source the app's shared/.env (server-side truth) into setup steps so
+		// scripts see the same values the systemd unit will run with. Exported
+		// SKIFF_*/SURREAL_* above act as bootstrapping defaults when the file
+		// (or individual keys) is absent.
+		sourceSharedEnv := fmt.Sprintf("if [ -f %s ]; then set -a; . %s || true; set +a; fi; ",
+			shellQuote(sharedDir+"/.env"), shellQuote(sharedDir+"/.env"))
+		if out, _ := client.RunCommand(fmt.Sprintf("[ -f %s ] && echo PRESENT || echo ABSENT", shellQuote(sharedDir+"/.env"))); strings.TrimSpace(out) == "PRESENT" {
+			p.log("  [INFO] Sourcing shared/.env into remote setup environment")
+		}
+
 		for idx, s := range project.RemoteSetupSteps {
 			p.log(fmt.Sprintf("[Remote %d/%d] %s", idx+1, len(project.RemoteSetupSteps), s.Name))
-			remoteCmd := fmt.Sprintf("cd %s && chmod +x *.sh 2>/dev/null || true; %s%s",
-				shellQuote(releaseDir), envPrefix, s.Command)
+			remoteCmd := fmt.Sprintf("cd %s && chmod +x *.sh 2>/dev/null || true; %s%s%s",
+				shellQuote(releaseDir), envPrefix, sourceSharedEnv, s.Command)
 
 			out, err := client.RunCommand(remoteCmd)
 			if strings.TrimSpace(out) != "" {
@@ -189,10 +199,20 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 	var activateScript strings.Builder
 	activateScript.WriteString(fmt.Sprintf("chmod +x %s/* 2>/dev/null || true; ", shellQuote(releaseDir)))
 
+	hasDotEnv := false
 	for _, item := range project.SharedFiles {
+		if item == ".env" {
+			hasDotEnv = true
+		}
 		activateScript.WriteString(fmt.Sprintf("ln -sfn %s %s; ",
 			shellQuote(fmt.Sprintf("%s/%s", sharedDir, item)),
 			shellQuote(fmt.Sprintf("%s/%s", releaseDir, item))))
+	}
+	if !hasDotEnv {
+		p.log("  [INFO] Linking shared/.env into release automatically")
+		activateScript.WriteString(fmt.Sprintf("ln -sfn %s %s; ",
+			shellQuote(fmt.Sprintf("%s/.env", sharedDir)),
+			shellQuote(fmt.Sprintf("%s/.env", releaseDir))))
 	}
 
 	activateScript.WriteString(fmt.Sprintf("ln -sfn %s %s; ",
