@@ -18,6 +18,9 @@ type ServerConfig struct {
 	KeyPath    string `json:"keyPath,omitempty"`
 	KeyContent string `json:"keyContent,omitempty"`
 	Password   string `json:"password,omitempty"`
+	// BandwidthLimitGB is the provider's monthly transfer allowance in GB.
+	// Zero means the plan is unmetered (bandwidth is reported but not tracked).
+	BandwidthLimitGB int `json:"bandwidthLimitGb,omitempty"`
 }
 
 type ArtifactRule struct {

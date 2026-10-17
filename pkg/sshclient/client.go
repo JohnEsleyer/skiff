@@ -24,6 +24,14 @@ type Telemetry struct {
 	DiskAvail  string  `json:"diskAvail"`
 	Uptime     string  `json:"uptime"`
 	LoadAvg    string  `json:"loadAvg"`
+
+	// Bandwidth counters aggregated across physical/virtual adapters.
+	RxFormatted      string  `json:"rxFormatted"`
+	TxFormatted      string  `json:"txFormatted"`
+	BandwidthTotal   string  `json:"bandwidthTotal"`
+	BandwidthBytes   int64   `json:"bandwidthBytes"`
+	BandwidthLimitGB int     `json:"bandwidthLimitGb"`
+	BandwidthPercent float64 `json:"bandwidthPercent"`
 }
 
 type Client struct {
@@ -149,9 +157,24 @@ func (c *Client) StreamLogs(cmd string, onLine func(string), stopChan <-chan str
 	return nil
 }
 
+func formatBandwidthBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 func (c *Client) GetTelemetry() (*Telemetry, error) {
-	// Query /proc/meminfo, df, and uptime in a single round-trip
-	cmd := `sh -c 'cat /proc/meminfo | grep -E "MemTotal|MemAvailable"; echo "---"; df -h / | tail -n 1; echo "---"; uptime'`
+	// Query meminfo, df, uptime, and live network counters from /proc/net/dev
+	// in a single SSH round-trip. Loopback, docker/veth and bridge interfaces
+	// are excluded so only real uplink traffic is counted.
+	cmd := `sh -c 'cat /proc/meminfo | grep -E "MemTotal|MemAvailable"; echo "---"; df -h / | tail -n 1; echo "---"; uptime; echo "---"; awk "NR>2 {if (\$1 !~ /lo:|docker|veth|br-/) {rx+=\$2; tx+=\$10}} END {printf \"%d %d\", rx, tx}" /proc/net/dev 2>/dev/null || echo "0 0"'`
 	out, err := c.RunCommand(cmd)
 	if err != nil {
 		return nil, err
@@ -162,7 +185,9 @@ func (c *Client) GetTelemetry() (*Telemetry, error) {
 		return nil, fmt.Errorf("unexpected telemetry output format")
 	}
 
-	tele := &Telemetry{}
+	tele := &Telemetry{
+		BandwidthLimitGB: c.config.BandwidthLimitGB,
+	}
 
 	// Parse RAM
 	var memTotal, memAvail int
@@ -198,6 +223,32 @@ func (c *Client) GetTelemetry() (*Telemetry, error) {
 
 	// Parse Uptime
 	tele.Uptime = strings.TrimSpace(parts[2])
+
+	// Parse Bandwidth (RX + TX bytes aggregated across physical adapters)
+	if len(parts) >= 4 {
+		netFields := strings.Fields(strings.TrimSpace(parts[3]))
+		if len(netFields) >= 2 {
+			rxBytes, _ := strconv.ParseInt(netFields[0], 10, 64)
+			txBytes, _ := strconv.ParseInt(netFields[1], 10, 64)
+			totalBytes := rxBytes + txBytes
+
+			tele.RxFormatted = formatBandwidthBytes(rxBytes)
+			tele.TxFormatted = formatBandwidthBytes(txBytes)
+			tele.BandwidthTotal = formatBandwidthBytes(totalBytes)
+			tele.BandwidthBytes = totalBytes
+
+			if tele.BandwidthLimitGB > 0 {
+				limitBytes := int64(tele.BandwidthLimitGB) * 1024 * 1024 * 1024
+				tele.BandwidthPercent = (float64(totalBytes) / float64(limitBytes)) * 100.0
+			}
+		}
+	}
+
+	if tele.BandwidthTotal == "" {
+		tele.BandwidthTotal = "0 B"
+		tele.RxFormatted = "0 B"
+		tele.TxFormatted = "0 B"
+	}
 
 	return tele, nil
 }

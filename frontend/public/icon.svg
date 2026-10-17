@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="50%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e1b4b"/>
+    </linearGradient>
+
+    <!-- Main Sail Gradient -->
+    <linearGradient id="mainSail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="60%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+
+    <!-- Jib Sail Gradient -->
+    <linearGradient id="jibSail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+
+    <!-- Hull Gradient -->
+    <linearGradient id="hullGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="50%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#312e81"/>
+    </linearGradient>
+
+    <!-- Glow Filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Squircle App Container -->
+  <rect width="512" height="512" rx="128" fill="url(#bgGrad)"/>
+  <rect width="508" height="508" x="2" y="2" rx="126" fill="none" stroke="#6366f1" stroke-opacity="0.3" stroke-width="4"/>
+
+  <!-- Glowing Aura -->
+  <circle cx="256" cy="240" r="140" fill="#6366f1" opacity="0.18" filter="url(#glow)"/>
+
+  <!-- Skiff Sails (Aerodynamic & Atomic) -->
+  <g filter="url(#glow)">
+    <!-- Main Mainsail (Port) -->
+    <path d="M236 84 L236 348 L96 348 Z" fill="url(#mainSail)" />
+
+    <!-- Foresail / Jib (Starboard) -->
+    <path d="M260 144 L404 348 L260 348 Z" fill="url(#jibSail)" opacity="0.95" />
+
+    <!-- Mast / Line of Deployment -->
+    <rect x="244" y="68" width="8" height="290" rx="4" fill="#f8fafc" opacity="0.9" />
+
+    <!-- Sleek Wave Hull -->
+    <path d="M72 376 C 140 376, 172 416, 256 416 C 340 416, 372 376, 440 376 C 416 432, 352 444, 256 444 C 160 444, 96 432, 72 376 Z" fill="url(#hullGrad)" />
+
+    <!-- Hull Deck Line -->
+    <path d="M84 376 L428 376" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" opacity="0.75"/>
+  </g>
+</svg>

@@ -123,6 +123,7 @@ export default function App() {
     authType: "key",
     keyPath: "",
     password: "",
+    bandwidthLimitGb: 0,
   });
 
   const [remoteLogs, setRemoteLogs] = useState([]);
@@ -296,35 +297,8 @@ export default function App() {
   // Domain DNS state lifted from DeployDomainSection (it polls every 12s)
   const [domainDnsCheck, setDomainDnsCheck] = useState(null);
 
-  // Live endpoint probes (status + latency per URL)
-  const [endpointProbes, setEndpointProbes] = useState({});
-  const [probingEndpoints, setProbingEndpoints] = useState(false);
-
-  const probeEndpoints = async (defs, serverId) => {
-    if (!defs || defs.length === 0 || !serverId || !window.go?.main?.App?.ProbeEndpoint) return;
-    setProbingEndpoints(true);
-    try {
-      const results = await Promise.all(
-        defs.map((d) =>
-          window.go.main.App.ProbeEndpoint(serverId, d.name, d.url).catch(() => ({
-            name: d.name,
-            url: d.url,
-            ok: false,
-            statusCode: 0,
-            latencyMs: 0,
-            error: "probe failed",
-          }))
-        )
-      );
-      const map = {};
-      results.forEach((r) => {
-        map[r.url] = r;
-      });
-      setEndpointProbes(map);
-    } finally {
-      setProbingEndpoints(false);
-    }
-  };
+  // Health probe result for the currently deployed app (status + latency)
+  const [healthProbeResult, setHealthProbeResult] = useState(null);
 
   const handleSelectServerCard = (srv) => {
     setSelectedServer(srv);
@@ -356,7 +330,12 @@ export default function App() {
     e.preventDefault();
     const id = serverForm.id || `srv-${Date.now()}`;
     try {
-      await window.go.main.App.SaveServer({ ...serverForm, id, port: Number(serverForm.port) });
+      await window.go.main.App.SaveServer({
+        ...serverForm,
+        id,
+        port: Number(serverForm.port),
+        bandwidthLimitGb: Number(serverForm.bandwidthLimitGb) || 0,
+      });
       setShowServerModal(false);
       addToast("success", "Server Saved", `${serverForm.name} profile configured`);
       loadData();
@@ -619,25 +598,22 @@ export default function App() {
     (activeProject?.healthUrl || "").trim() ||
     (primaryUrl ? `${primaryUrl.replace(/\/$/, "")}/api/health` : "");
 
-  const endpointDefs = isReallyDeployed
-    ? [
-        ...(primaryUrl ? [{ name: "Live Site", url: primaryUrl }] : []),
-        ...(domainLiveUrl && directIpUrl && domainLiveUrl !== directIpUrl
-          ? [{ name: "Direct IP", url: directIpUrl }]
-          : []),
-        ...(healthEndpointUrl ? [{ name: "Health Check", url: healthEndpointUrl }] : []),
-      ]
-    : [];
-
-  // Auto-probe endpoints whenever a deployment becomes visible
+  // Auto-probe the deployed app's health endpoint whenever it becomes visible
   useEffect(() => {
-    if (deploymentStatus?.isDeployed && selectedServer && endpointDefs.length > 0) {
-      probeEndpoints(endpointDefs, selectedServer.id);
+    if (
+      deploymentStatus?.isDeployed &&
+      selectedServer?.id &&
+      healthEndpointUrl &&
+      window.go?.main?.App?.ProbeEndpoint
+    ) {
+      window.go.main.App.ProbeEndpoint(selectedServer.id, "Health", healthEndpointUrl)
+        .then((res) => setHealthProbeResult(res))
+        .catch(() => setHealthProbeResult({ ok: false, statusCode: 0, latencyMs: 0 }));
     } else {
-      setEndpointProbes({});
+      setHealthProbeResult(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deploymentStatus?.isDeployed, activeProject?.id, selectedServer?.id]);
+  }, [deploymentStatus?.isDeployed, activeProject?.id, selectedServer?.id, healthEndpointUrl]);
 
   const domainDnsChip = (() => {
     if (!projectDomain) return null;
@@ -763,6 +739,7 @@ export default function App() {
                     authType: "key",
                     keyPath: "",
                     password: "",
+                    bandwidthLimitGb: 0,
                   });
                   setShowServerModal(true);
                 }}
@@ -792,6 +769,11 @@ export default function App() {
                         <span className="font-bold text-white text-sm">{s.name}</span>
                       </div>
                       <div className="flex items-center gap-1">
+                        {s.bandwidthLimitGb > 0 && (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/60">
+                            {s.bandwidthLimitGb} GB Quota
+                          </span>
+                        )}
                         <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-slate-950 text-slate-400 border border-slate-800">
                           {s.authType}
                         </span>
@@ -1102,7 +1084,7 @@ export default function App() {
                           <div className="px-2.5 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/60 min-w-0">
                             <div className="text-[9px] font-mono uppercase text-slate-500 font-bold">Health</div>
                             {(() => {
-                              const hp = healthEndpointUrl ? endpointProbes[healthEndpointUrl] : null;
+                              const hp = healthProbeResult;
                               if (!hp)
                                 return <div className="font-mono text-slate-500">probing…</div>;
                               if (hp.ok)
@@ -1132,67 +1114,6 @@ export default function App() {
 
                         <div className="text-[10px] font-mono text-slate-500">
                           💡 Chrome tip: always open the explicit <code className="text-emerald-300">http://</code> link — typing a bare IP gets auto-upgraded to https:// and fails.
-                        </div>
-                      </div>
-
-                      {/* LIVE ENDPOINTS */}
-                      <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl space-y-2">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Globe className="w-3.5 h-3.5 text-indigo-400" />
-                            <h3 className="text-xs font-bold text-white">Live Endpoints</h3>
-                            <span className="text-[10px] font-mono text-slate-400 bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">
-                              {endpointDefs.length}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => probeEndpoints(endpointDefs, selectedServer?.id)}
-                            disabled={probingEndpoints}
-                            className="p-1 rounded text-slate-400 hover:text-white transition"
-                            title="Re-probe endpoints"
-                          >
-                            <RefreshCw className={`w-3 h-3 ${probingEndpoints ? "animate-spin text-indigo-400" : ""}`} />
-                          </button>
-                        </div>
-                        <div className="space-y-1.5">
-                          {endpointDefs.map((def) => {
-                            const p = endpointProbes[def.url];
-                            return (
-                              <div
-                                key={def.url}
-                                className="px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between gap-2"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span
-                                    className={`w-2 h-2 rounded-full shrink-0 ${
-                                      !p ? "bg-slate-600" : p.ok ? "bg-emerald-400" : "bg-rose-400"
-                                    }`}
-                                  />
-                                  <div className="min-w-0">
-                                    <div className="text-[11px] font-bold text-white">{def.name}</div>
-                                    <div className="font-mono text-[10px] text-slate-400 truncate select-all">{def.url}</div>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <span className="font-mono text-[10px] text-slate-400">
-                                    {!p ? "…" : p.ok ? `${p.statusCode} • ${p.latencyMs}ms` : p.error || `HTTP ${p.statusCode}`}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => openExternal(def.url)}
-                                    className="p-1 rounded-lg text-slate-500 hover:text-indigo-300 hover:bg-slate-800 transition"
-                                    title={`Open ${def.name}`}
-                                  >
-                                    <ExternalLink className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                          {endpointDefs.length === 0 && (
-                            <div className="text-[11px] text-slate-500 font-mono">No endpoints yet.</div>
-                          )}
                         </div>
                       </div>
                     </div>
@@ -1574,6 +1495,24 @@ export default function App() {
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
                 />
               </div>
+            </div>
+
+            {/* Provider monthly bandwidth quota (0 = unmetered) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-slate-400 text-[10px] uppercase font-mono block">
+                  Monthly Bandwidth Limit (GB)
+                </label>
+                <span className="text-[10px] font-mono text-slate-500">0 = Unlimited / untracked</span>
+              </div>
+              <input
+                type="number"
+                min="0"
+                placeholder="e.g. 1000 (for a 1TB VPS limit)"
+                value={serverForm.bandwidthLimitGb || ""}
+                onChange={(e) => setServerForm({ ...serverForm, bandwidthLimitGb: Number(e.target.value) })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
+              />
             </div>
 
             <div>

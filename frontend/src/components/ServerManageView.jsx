@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import {
   Activity,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   CheckCircle2,
   Cpu,
   Database,
@@ -10,6 +12,7 @@ import {
   Globe,
   HardDrive,
   Layers,
+  Network,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -153,12 +156,12 @@ export default function ServerManageView({
       </div>
 
       {/* Live System Telemetry Gauges */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {/* RAM Usage */}
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
           <div className="flex items-center justify-between text-xs">
             <span className="flex items-center gap-1.5 text-slate-400 font-medium">
-              <Cpu className="w-4 h-4 text-indigo-400" /> RAM Consumption
+              <Cpu className="w-4 h-4 text-indigo-400" /> RAM
             </span>
             <span className="font-mono text-white font-bold">{ramPercent.toFixed(1)}%</span>
           </div>
@@ -174,6 +177,48 @@ export default function ServerManageView({
             <span>Used: {ramUsed} MB</span>
             <span>Total: {ramTotal} MB</span>
           </div>
+        </div>
+
+        {/* VPS Bandwidth Consumption Tracker */}
+        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="flex items-center gap-1.5 text-slate-400 font-medium">
+              <Network className="w-4 h-4 text-cyan-400" /> Bandwidth
+            </span>
+            <span className="font-mono text-cyan-300 font-bold text-xs truncate">
+              {tele?.bandwidthTotal || "0 B"}
+            </span>
+          </div>
+
+          {tele?.bandwidthLimitGb > 0 ? (
+            <>
+              <div className="w-full h-2 rounded-full bg-slate-950 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-500 ${
+                    tele.bandwidthPercent > 90
+                      ? "bg-rose-500"
+                      : tele.bandwidthPercent > 75
+                      ? "bg-amber-400"
+                      : "bg-cyan-400"
+                  }`}
+                  style={{ width: `${Math.min(100, tele.bandwidthPercent || 0)}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[10px] font-mono text-slate-500 pt-1">
+                <span>{(tele.bandwidthPercent || 0).toFixed(1)}% used</span>
+                <span>Quota: {tele.bandwidthLimitGb} GB</span>
+              </div>
+            </>
+          ) : (
+            <div className="pt-2 flex justify-between text-[10px] font-mono text-slate-400">
+              <span className="flex items-center gap-1 text-emerald-400">
+                <ArrowDown className="w-2.5 h-2.5" /> {tele?.rxFormatted || "0 B"}
+              </span>
+              <span className="flex items-center gap-1 text-sky-400">
+                <ArrowUp className="w-2.5 h-2.5" /> {tele?.txFormatted || "0 B"}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Disk Usage */}

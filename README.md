@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="frontend/public/icon.svg" alt="Skiff icon" width="160" height="160" />
+</p>
+
 # Skiff
 
 The zero-agent desktop deployment engine for low-end servers.
@@ -130,6 +134,47 @@ runs the API; static assets live on Cloudflare Pages.
    to VPS IP (Skiff + Caddy own TLS). If orange-cloud proxied, use
    Cloudflare SSL mode Full/Strict; otherwise DNS-only and let Caddy do
    Let's Encrypt.
+
+## VPS Bandwidth Tracking
+
+Each server profile has an optional **Monthly Bandwidth Limit (GB)**. When set,
+Skiff reads `/proc/net/dev` over SSH (loopback, `docker*`, `veth*` and bridge
+interfaces are excluded), aggregates RX + TX across the real uplink adapters,
+and shows live consumption plus a quota percentage on the Manage VPS board and
+the diagnostics modal. The bar turns amber past 75% and rose past 90%. Set the
+limit to `0` for unmetered plans — bandwidth is still reported, just untracked.
+
+## Installing on Ubuntu (20.04, 22.04, 24.04 LTS)
+
+### 1. Install System Dependencies
+Wails v2 requires GTK3 and WebKit2GTK headers on Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev \
+    gcc g++ git curl
+```
+*(If on Ubuntu 20.04, use `libwebkit2gtk-4.0-dev` instead).*
+
+### 2. Build Skiff
+```bash
+git clone <your-repo> skiff
+cd skiff
+wails build
+```
+
+### 3. Install to System Menu & Path
+Run the included installer:
+```bash
+sudo ./install.sh
+```
+This puts:
+- Binary: `/usr/local/bin/skiff`
+- SVG Icon: `/usr/share/icons/hicolor/scalable/apps/skiff.svg`
+- Launcher: `/usr/share/applications/skiff.desktop`
+
+You can now search for **"Skiff"** in your Ubuntu GNOME / Dash application
+launcher or launch it from any terminal by typing `skiff`.
 
 ## License
 

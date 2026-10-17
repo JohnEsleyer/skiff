@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Skiff
+Comment=Zero-Agent Desktop Deployment Engine for Low-End Servers
+Exec=/usr/local/bin/skiff %U
+Icon=skiff
+Terminal=false
+Type=Application
+Categories=Development;Utility;System;
+StartupNotify=true
+Keywords=ssh;deploy;vps;caddy;surrealdb;server;

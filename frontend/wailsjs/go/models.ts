@@ -357,6 +357,12 @@ export namespace sshclient {
 	    diskAvail: string;
 	    uptime: string;
 	    loadAvg: string;
+	    rxFormatted: string;
+	    txFormatted: string;
+	    bandwidthTotal: string;
+	    bandwidthBytes: number;
+	    bandwidthLimitGb: number;
+	    bandwidthPercent: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Telemetry(source);
@@ -371,6 +377,12 @@ export namespace sshclient {
 	        this.diskAvail = source["diskAvail"];
 	        this.uptime = source["uptime"];
 	        this.loadAvg = source["loadAvg"];
+	        this.rxFormatted = source["rxFormatted"];
+	        this.txFormatted = source["txFormatted"];
+	        this.bandwidthTotal = source["bandwidthTotal"];
+	        this.bandwidthBytes = source["bandwidthBytes"];
+	        this.bandwidthLimitGb = source["bandwidthLimitGb"];
+	        this.bandwidthPercent = source["bandwidthPercent"];
 	    }
 	}
 
@@ -474,6 +486,7 @@ export namespace store {
 	    keyPath?: string;
 	    keyContent?: string;
 	    password?: string;
+	    bandwidthLimitGb?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ServerConfig(source);
@@ -490,6 +503,7 @@ export namespace store {
 	        this.keyPath = source["keyPath"];
 	        this.keyContent = source["keyContent"];
 	        this.password = source["password"];
+	        this.bandwidthLimitGb = source["bandwidthLimitGb"];
 	    }
 	}
 
