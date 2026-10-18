@@ -285,6 +285,14 @@ func (a *App) ReadSkiffConfigFromPath(folderPath string) (*store.ProjectConfig, 
 	}
 
 	cfg.LocalPath = folderPath
+	if len(cfg.EnvVars) == 0 {
+		if envData, err := a.GetLocalProjectEnv(folderPath); err == nil && envData != "" {
+			cfg.EnvVars = parseEnvContentToVars(envData)
+			if cfg.Env == "" {
+				cfg.Env = envData
+			}
+		}
+	}
 	return &cfg, nil
 }
 
@@ -1169,8 +1177,87 @@ func (a *App) SaveAppEnv(serverID, appDir, appName, content string, restartServi
 	return nil
 }
 
+type DetectedEnvFile struct {
+	Name    string         `json:"name"`
+	Path    string         `json:"path"`
+	Content string         `json:"content"`
+	Vars    []store.EnvVar `json:"vars"`
+}
+
+func parseEnvContentToVars(content string) []store.EnvVar {
+	var vars []store.EnvVar
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		body := trimmed
+		if strings.HasPrefix(body, "export ") {
+			body = strings.TrimSpace(strings.TrimPrefix(body, "export "))
+		}
+		eq := strings.Index(body, "=")
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(body[:eq])
+		val := strings.TrimSpace(body[eq+1:])
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+		if key != "" {
+			vars = append(vars, store.EnvVar{Key: key, Value: val})
+		}
+	}
+	return vars
+}
+
+// DetectProjectEnvFiles scans the local project directory for standard .env files
+// and returns their contents along with parsed key-value variables.
+func (a *App) DetectProjectEnvFiles(localPath string) ([]DetectedEnvFile, error) {
+	clean := filepath.Clean(strings.TrimSpace(localPath))
+	if clean == "" || clean == "." {
+		return nil, fmt.Errorf("empty project path")
+	}
+	st, err := os.Stat(clean)
+	if err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("project directory not found")
+	}
+
+	candidates := []string{
+		".env",
+		".env.local",
+		".env.production",
+		".env.development",
+		".env.staging",
+		".env.example",
+	}
+
+	var found []DetectedEnvFile
+	for _, name := range candidates {
+		fp := filepath.Join(clean, name)
+		data, err := os.ReadFile(fp)
+		if err != nil {
+			continue
+		}
+		if len(data) > 512*1024 {
+			continue
+		}
+		strContent := string(data)
+		found = append(found, DetectedEnvFile{
+			Name:    name,
+			Path:    fp,
+			Content: strContent,
+			Vars:    parseEnvContentToVars(strContent),
+		})
+	}
+
+	return found, nil
+}
+
 // GetLocalProjectEnv scans the local project directory for .env,
-// .env.production, or .env.example (first hit wins) for one-click imports.
+// .env.local, .env.production, or .env.example (first hit wins) for one-click imports.
 func (a *App) GetLocalProjectEnv(localPath string) (string, error) {
 	clean := filepath.Clean(strings.TrimSpace(localPath))
 	if clean == "" || clean == "." {
@@ -1180,7 +1267,7 @@ func (a *App) GetLocalProjectEnv(localPath string) (string, error) {
 	if err != nil || !st.IsDir() {
 		return "", fmt.Errorf("project directory not found")
 	}
-	for _, name := range []string{".env", ".env.production", ".env.example"} {
+	for _, name := range []string{".env", ".env.local", ".env.production", ".env.development", ".env.staging", ".env.example"} {
 		data, err := os.ReadFile(filepath.Join(clean, name))
 		if err != nil {
 			continue

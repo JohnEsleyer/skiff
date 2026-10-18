@@ -1,6 +1,64 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Folder, Layers, Plus, Trash2, X } from "lucide-react";
+import {
+  Check,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  FileKey2,
+  Folder,
+  Layers,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Table2,
+  Trash2,
+  X,
+} from "lucide-react";
 import CustomSelect from "./CustomSelect.jsx";
+
+const SECRET_KEY_PATTERN = /pass|secret|token|private|credential|api[_-]?key/i;
+
+function isSecretKey(key) {
+  return SECRET_KEY_PATTERN.test(key || "");
+}
+
+function parseEnvTextToVars(text) {
+  if (!text) return [];
+  const lines = text.split("\n");
+  const vars = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const body = trimmed.startsWith("export ") ? trimmed.slice(7).trim() : trimmed;
+    const eq = body.indexOf("=");
+    if (eq <= 0) continue;
+    const key = body.slice(0, eq).trim();
+    let val = body.slice(eq + 1).trim();
+    if (
+      val.length >= 2 &&
+      ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      vars.push({ key, value: val });
+    }
+  }
+  return vars;
+}
+
+function formatVarsToEnvText(vars) {
+  if (!vars || vars.length === 0) return "";
+  return vars
+    .map((v) => {
+      const val = v.value || "";
+      if (/[\s#"']/.test(val) && !(val.startsWith('"') && val.endsWith('"'))) {
+        return `${v.key}="${val.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+      }
+      return `${v.key}=${val}`;
+    })
+    .join("\n");
+}
 
 const blankForm = (serverId) => ({
   id: `proj-${Date.now()}`,
@@ -18,19 +76,30 @@ const blankForm = (serverId) => ({
   restartCommand: "sudo systemctl restart my-app && sudo systemctl reload caddy",
   healthUrl: "",
   keepReleases: 3,
+  envVars: [],
+  env: "",
 });
 
-const normalize = (p) => ({
-  ...p,
-  domain: p.domain || "",
-  targetPort: p.targetPort || 8080,
-  tlsMode: p.tlsMode || "auto",
-  buildSteps: p.buildSteps?.length ? p.buildSteps : [{ name: "Build App", command: "npm run build" }],
-  artifacts: p.artifacts?.length ? p.artifacts : [{ local: "dist", remote: "public" }],
-  remoteSetupSteps: p.remoteSetupSteps || [],
-  sharedFiles: p.sharedFiles ?? [".env", "uploads"],
-  keepReleases: p.keepReleases ?? 3,
-});
+const normalize = (p) => {
+  const envVars = p.envVars?.length
+    ? p.envVars
+    : p.env
+    ? parseEnvTextToVars(p.env)
+    : [];
+  return {
+    ...p,
+    domain: p.domain || "",
+    targetPort: p.targetPort || 8080,
+    tlsMode: p.tlsMode || "auto",
+    buildSteps: p.buildSteps?.length ? p.buildSteps : [{ name: "Build App", command: "npm run build" }],
+    artifacts: p.artifacts?.length ? p.artifacts : [{ local: "dist", remote: "public" }],
+    remoteSetupSteps: p.remoteSetupSteps || [],
+    sharedFiles: p.sharedFiles ?? [".env", "uploads"],
+    keepReleases: p.keepReleases ?? 3,
+    envVars,
+    env: p.env || formatVarsToEnvText(envVars),
+  };
+};
 
 export default function ProjectModal({
   isOpen,
@@ -44,16 +113,72 @@ export default function ProjectModal({
   const [hasDetectedConfig, setHasDetectedConfig] = useState(false);
   const [isBrowsing, setIsBrowsing] = useState(false);
 
+  // Environment variables editor state
+  const [detectedFiles, setDetectedFiles] = useState([]);
+  const [isDetectingEnv, setIsDetectingEnv] = useState(false);
+  const [activeDetectedFile, setActiveDetectedFile] = useState(null);
+  const [envEditorMode, setEnvEditorMode] = useState("table");
+  const [showAllSecrets, setShowAllSecrets] = useState(false);
+  const [newEnvKey, setNewEnvKey] = useState("");
+  const [newEnvValue, setNewEnvValue] = useState("");
+  const [envRawText, setEnvRawText] = useState("");
+
   useEffect(() => {
     if (!isOpen) return;
     if (project) {
-      setFormData(normalize(project));
+      const norm = normalize(project);
+      setFormData(norm);
+      setEnvRawText(norm.env || formatVarsToEnvText(norm.envVars));
       setHasDetectedConfig(false);
+      if (norm.localPath) {
+        scanEnvFiles(norm.localPath, false);
+      }
     } else {
-      setFormData(blankForm(selectedServerId || servers[0]?.id || ""));
+      const bf = blankForm(selectedServerId || servers[0]?.id || "");
+      setFormData(bf);
+      setEnvRawText("");
       setHasDetectedConfig(false);
+      setDetectedFiles([]);
+      setActiveDetectedFile(null);
     }
   }, [project, servers, selectedServerId, isOpen]);
+
+  const scanEnvFiles = async (folderPath, shouldAutoApply = true) => {
+    if (!folderPath || !window.go?.main?.App?.DetectProjectEnvFiles) return;
+    setIsDetectingEnv(true);
+    try {
+      const files = await window.go.main.App.DetectProjectEnvFiles(folderPath);
+      setDetectedFiles(files || []);
+      if (files && files.length > 0) {
+        const primary = files[0];
+        setActiveDetectedFile(primary.name);
+        if (shouldAutoApply && (!formData.envVars || formData.envVars.length === 0)) {
+          applyDetectedEnvFile(primary);
+        }
+      } else {
+        setActiveDetectedFile(null);
+      }
+    } catch {
+      setDetectedFiles([]);
+      setActiveDetectedFile(null);
+    } finally {
+      setIsDetectingEnv(false);
+    }
+  };
+
+  const applyDetectedEnvFile = (fileObj) => {
+    if (!fileObj) return;
+    const parsed = fileObj.vars && fileObj.vars.length > 0
+      ? fileObj.vars
+      : parseEnvTextToVars(fileObj.content);
+    setFormData((prev) => ({
+      ...prev,
+      envVars: parsed,
+      env: fileObj.content || formatVarsToEnvText(parsed),
+    }));
+    setEnvRawText(fileObj.content || formatVarsToEnvText(parsed));
+    setActiveDetectedFile(fileObj.name);
+  };
 
   if (!isOpen) return null;
 
@@ -85,6 +210,9 @@ export default function ProjectModal({
 
       setFormData(next);
       setHasDetectedConfig(detected);
+      setEnvRawText(next.env || formatVarsToEnvText(next.envVars));
+
+      scanEnvFiles(chosenPath, next.envVars.length === 0);
     } catch (err) {
       console.error("Directory dialog error:", err);
     } finally {
@@ -92,9 +220,63 @@ export default function ProjectModal({
     }
   };
 
+  const handleAddEnvVar = () => {
+    const key = newEnvKey.trim();
+    if (!key) return;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      alert("Variable key must start with a letter/underscore and contain only alphanumeric characters or underscores.");
+      return;
+    }
+    const currentVars = formData.envVars || [];
+    const exists = currentVars.some((v) => v.key === key);
+    let nextVars;
+    if (exists) {
+      nextVars = currentVars.map((v) => (v.key === key ? { key, value: newEnvValue } : v));
+    } else {
+      nextVars = [...currentVars, { key, value: newEnvValue }];
+    }
+    const raw = formatVarsToEnvText(nextVars);
+    setFormData((prev) => ({ ...prev, envVars: nextVars, env: raw }));
+    setEnvRawText(raw);
+    setNewEnvKey("");
+    setNewEnvValue("");
+  };
+
+  const handleUpdateEnvVar = (idx, field, val) => {
+    const nextVars = (formData.envVars || []).map((v, i) =>
+      i === idx ? { ...v, [field]: val } : v
+    );
+    const raw = formatVarsToEnvText(nextVars);
+    setFormData((prev) => ({ ...prev, envVars: nextVars, env: raw }));
+    setEnvRawText(raw);
+  };
+
+  const handleRemoveEnvVar = (idx) => {
+    const nextVars = (formData.envVars || []).filter((_, i) => i !== idx);
+    const raw = formatVarsToEnvText(nextVars);
+    setFormData((prev) => ({ ...prev, envVars: nextVars, env: raw }));
+    setEnvRawText(raw);
+  };
+
+  const handleRawEnvChange = (text) => {
+    setEnvRawText(text);
+    const parsed = parseEnvTextToVars(text);
+    setFormData((prev) => ({
+      ...prev,
+      envVars: parsed,
+      env: text,
+    }));
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSave(formData);
+    const finalVars = formData.envVars || [];
+    const payload = {
+      ...formData,
+      env: envRawText || formatVarsToEnvText(finalVars),
+      envVars: finalVars,
+    };
+    onSave(payload);
     onClose();
   };
 
@@ -149,9 +331,13 @@ export default function ProjectModal({
             <div className="flex gap-2">
               <input
                 required
-                readOnly
                 placeholder="Click Browse to select project directory..."
                 value={formData.localPath}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFormData((prev) => ({ ...prev, localPath: val }));
+                  scanEnvFiles(val, false);
+                }}
                 className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono outline-none min-w-0"
               />
               <button
@@ -213,6 +399,186 @@ export default function ProjectModal({
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500"
               />
             </div>
+          </div>
+
+          {/* PROJECT ENVIRONMENT VARIABLES INTERFACE */}
+          <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-2 flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <FileKey2 className="w-3.5 h-3.5 text-emerald-400" />
+                <label className="text-[10px] font-mono uppercase text-emerald-400 font-bold">
+                  Environment Variables (.env)
+                </label>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-900 text-slate-400 border border-slate-800">
+                  {(formData.envVars || []).length} configured
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {formData.localPath && (
+                  <button
+                    type="button"
+                    onClick={() => scanEnvFiles(formData.localPath, true)}
+                    disabled={isDetectingEnv}
+                    className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-[10px] font-mono flex items-center gap-1 border border-slate-800 transition"
+                    title="Scan project folder for .env files"
+                  >
+                    <RefreshCw className={`w-2.5 h-2.5 ${isDetectingEnv ? "animate-spin text-emerald-400" : ""}`} />
+                    <span>Detect .env</span>
+                  </button>
+                )}
+
+                <div className="flex items-center p-0.5 rounded-lg bg-slate-900 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setEnvEditorMode("table")}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 transition ${
+                      envEditorMode === "table" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <Table2 className="w-2.5 h-2.5" /> Key-Value
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEnvEditorMode("raw")}
+                    className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 transition ${
+                      envEditorMode === "raw" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <Pencil className="w-2.5 h-2.5" /> Raw
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAllSecrets((s) => !s)}
+                  className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-900"
+                  title={showAllSecrets ? "Mask secrets" : "Reveal secrets"}
+                >
+                  {showAllSecrets ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Auto-detected .env files banner & quick loader */}
+            {detectedFiles.length > 0 && (
+              <div className="p-2.5 rounded-xl bg-emerald-950/20 border border-emerald-800/40 space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <span className="text-emerald-300 flex items-center gap-1.5 font-bold">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                    Auto-detected {detectedFiles.length} env file(s) in project folder:
+                  </span>
+                  <span className="text-slate-500">Click to load</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {detectedFiles.map((df) => (
+                    <button
+                      key={df.name}
+                      type="button"
+                      onClick={() => applyDetectedEnvFile(df)}
+                      className={`px-2 py-0.5 rounded-lg text-[10px] font-mono flex items-center gap-1 border transition ${
+                        activeDetectedFile === df.name
+                          ? "bg-emerald-950 text-emerald-300 border-emerald-700/80 font-bold"
+                          : "bg-slate-900 text-slate-300 border-slate-800 hover:border-emerald-600/50"
+                      }`}
+                    >
+                      <span>{df.name}</span>
+                      <span className="text-slate-500">({df.vars?.length || 0})</span>
+                      {activeDetectedFile === df.name && <Check className="w-2.5 h-2.5 text-emerald-400 ml-0.5" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Mode A: Key-Value Table Editor */}
+            {envEditorMode === "table" && (
+              <div className="space-y-2">
+                <div className="space-y-1.5 max-h-48 overflow-y-auto custom-scroll pr-1">
+                  {(formData.envVars || []).map((ev, idx) => {
+                    const isSecret = isSecretKey(ev.key);
+                    return (
+                      <div key={idx} className="flex items-center gap-1.5">
+                        <input
+                          placeholder="KEY"
+                          value={ev.key}
+                          onChange={(e) => handleUpdateEnvVar(idx, "key", e.target.value.toUpperCase())}
+                          className="w-1/3 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-indigo-300 font-mono outline-none focus:border-indigo-500 min-w-0"
+                        />
+                        <input
+                          type={isSecret && !showAllSecrets ? "password" : "text"}
+                          placeholder="value"
+                          value={ev.value}
+                          onChange={(e) => handleUpdateEnvVar(idx, "value", e.target.value)}
+                          className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-indigo-500 min-w-0"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveEnvVar(idx)}
+                          className="p-1.5 text-slate-500 hover:text-rose-400 rounded shrink-0 transition"
+                          title="Remove variable"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {(!formData.envVars || formData.envVars.length === 0) && (
+                    <div className="p-4 text-center text-slate-600 text-[11px] font-mono border border-dashed border-slate-800/80 rounded-xl">
+                      No environment variables set. Add one below or load from detected .env.
+                    </div>
+                  )}
+                </div>
+
+                {/* Manual Add Variable Inputs */}
+                <div className="flex items-center gap-1.5 pt-1 border-t border-slate-800/60">
+                  <input
+                    placeholder="NEW_KEY"
+                    value={newEnvKey}
+                    onChange={(e) => setNewEnvKey(e.target.value.toUpperCase())}
+                    onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddEnvVar())}
+                    className="w-1/3 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-indigo-300 font-mono outline-none focus:border-indigo-500 min-w-0"
+                  />
+                  <input
+                    placeholder="value"
+                    value={newEnvValue}
+                    onChange={(e) => setNewEnvValue(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddEnvVar())}
+                    className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-indigo-500 min-w-0"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddEnvVar}
+                    disabled={!newEnvKey.trim()}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Mode B: Raw Text Editor */}
+            {envEditorMode === "raw" && (
+              <div className="space-y-1">
+                <textarea
+                  value={envRawText}
+                  onChange={(e) => handleRawEnvChange(e.target.value)}
+                  spellCheck={false}
+                  placeholder={`# Define variables as KEY=value\nPORT=8080\nNODE_ENV=production`}
+                  className="w-full h-36 bg-slate-900 border border-slate-800 rounded-xl p-2.5 font-mono text-[11px] text-slate-100 outline-none focus:border-indigo-500 leading-relaxed resize-y"
+                />
+                <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                  <span>Lines: {envRawText ? envRawText.split("\n").length : 0}</span>
+                  <span>Parsed: {(formData.envVars || []).length} variables</span>
+                </div>
+              </div>
+            )}
+
+            <p className="text-[10px] text-slate-500 font-mono leading-tight">
+              Stored securely on VPS at <code className="text-slate-400">{formData.appDir || "/opt/skiff/apps/<app>"}/shared/.env</code> (chmod 0600) and linked into each release.
+            </p>
           </div>
 
           {/* Sequential Local Build Commands */}

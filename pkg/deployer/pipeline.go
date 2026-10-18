@@ -119,6 +119,36 @@ func (p *Pipeline) Execute(project store.ProjectConfig) error {
 		return fmt.Errorf("remote directory setup failed: %w", err)
 	}
 
+	// Initialize shared/.env if configured on the project and not yet present on the VPS
+	envContent := strings.TrimSpace(project.Env)
+	if envContent == "" && len(project.EnvVars) > 0 {
+		var sb strings.Builder
+		for _, ev := range project.EnvVars {
+			if ev.Key != "" {
+				val := ev.Value
+				if strings.ContainsAny(val, " \t\n\r#\"'") && !(strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) {
+					val = fmt.Sprintf("\"%s\"", strings.ReplaceAll(val, `"`, `\"`))
+				}
+				sb.WriteString(fmt.Sprintf("%s=%s\n", ev.Key, val))
+			}
+		}
+		envContent = sb.String()
+	}
+
+	if envContent != "" {
+		remoteEnvCheck := fmt.Sprintf("[ -f %s ] && echo EXISTS || echo MISSING", shellQuote(sharedDir+"/.env"))
+		checkOut, _ := client.RunCommand(remoteEnvCheck)
+		if strings.TrimSpace(checkOut) == "MISSING" {
+			p.log("  [INFO] Initializing remote shared/.env with configured project environment variables")
+			encoded := base64.StdEncoding.EncodeToString([]byte(envContent))
+			writeCmd := fmt.Sprintf("echo '%s' | base64 -d > %s && chmod 600 %s",
+				encoded, shellQuote(sharedDir+"/.env"), shellQuote(sharedDir+"/.env"))
+			if _, err := client.RunCommand(writeCmd); err != nil {
+				p.log(fmt.Sprintf("  [WARNING] Could not initialize shared/.env: %s", err))
+			}
+		}
+	}
+
 	dbCreds := discoverRemoteDbCredentials(client, p)
 	p.step("preflight", "success")
 

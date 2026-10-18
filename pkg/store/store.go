@@ -33,6 +33,11 @@ type BuildStep struct {
 	Command string `json:"command"`
 }
 
+type EnvVar struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 type ProjectConfig struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name"`
@@ -49,6 +54,8 @@ type ProjectConfig struct {
 	RestartCommand   string         `json:"restartCommand"`
 	HealthURL        string         `json:"healthUrl"`
 	KeepReleases     int            `json:"keepReleases"`
+	EnvVars          []EnvVar       `json:"envVars,omitempty"`
+	Env              string         `json:"env,omitempty"`
 }
 
 type AppData struct {

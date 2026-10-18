@@ -33,6 +33,8 @@ export function DeleteServer(arg1:string):Promise<void>;
 
 export function DeployProject(arg1:string):Promise<void>;
 
+export function DetectProjectEnvFiles(arg1:string):Promise<Array<main.DetectedEnvFile>>;
+
 export function ExecuteServerCommand(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ExecCommandResult>;
 
 export function GetAppDomainConfig(arg1:string,arg2:string):Promise<main.DomainRouteConfig>;

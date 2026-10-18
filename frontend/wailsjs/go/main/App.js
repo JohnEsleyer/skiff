@@ -58,6 +58,10 @@ export function DeployProject(arg1) {
   return window['go']['main']['App']['DeployProject'](arg1);
 }
 
+export function DetectProjectEnvFiles(arg1) {
+  return window['go']['main']['App']['DetectProjectEnvFiles'](arg1);
+}
+
 export function ExecuteServerCommand(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ExecuteServerCommand'](arg1, arg2, arg3, arg4);
 }
